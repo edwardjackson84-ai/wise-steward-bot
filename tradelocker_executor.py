@@ -15,6 +15,7 @@ TRADELOCKER_API_URL = os.environ.get("TRADELOCKER_API_URL", "https://api.tradelo
 EMAIL = os.environ.get("TRADELOCKER_EMAIL", "your_email")
 PASSWORD = os.environ.get("TRADELOCKER_PASSWORD", "your_password")
 SERVER = os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Live")
+ACCOUNT_ID = os.environ.get("TRADELOCKER_ACC_NUM", "your_account_number")
 
 # Example mapping of TradingView symbols to TradeLocker Instrument IDs
 # You will need to query the TradeLocker instruments API to get the exact IDs for Hankotrade
@@ -58,26 +59,14 @@ def authenticate():
     data = auth_response.json()
     token = data.get("accessToken")
     
-    # Retrieve the active account ID
-    accounts_url = f"{TRADELOCKER_API_URL}/trade/accounts"
-    acc_headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    acc_response = requests.get(accounts_url, headers=acc_headers)
-    
-    if not acc_response.ok:
-        raise Exception(f"Failed to fetch accounts: {acc_response.text}")
+    # TradeLocker API now requires the accNum upfront for /trade/ endpoints.
+    # We bypass fetching the account list and use the explicit environment variable.
+    if ACCOUNT_ID == "your_account_number" or not ACCOUNT_ID:
+        raise Exception("TRADELOCKER_ACC_NUM environment variable is missing or invalid.")
         
-    accounts = acc_response.json().get("accounts", [])
-    if not accounts:
-        raise Exception("No TradeLocker accounts found for this user.")
-        
-    # We assume the first account is the primary trading account
-    account_id = accounts[0].get("id")
-    print(f"Authenticated successfully! Account ID: {account_id}")
+    print(f"Authenticated successfully! Using Account ID: {ACCOUNT_ID}")
     
-    return token, account_id
+    return token, ACCOUNT_ID
 
 def write_journal_entry(signal_data):
     """Write an entry to the Journal of the Sovereign Arbitrator."""
