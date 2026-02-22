@@ -20,7 +20,8 @@ SERVER = os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Live")
 # You will need to query the TradeLocker instruments API to get the exact IDs for Hankotrade
 INSTRUMENT_MAP = {
     "US30": 12345, # Example ID, you must fetch the real one via the API or dashboard
-    "EURUSD": 67890
+    "EURUSD": 67890,
+    "BTCUSD": 16711
 }
 
 def is_sabbath_mode_active():
@@ -51,7 +52,7 @@ def authenticate():
     
     auth_response = requests.post(auth_url, json=payload, headers=headers)
     
-    if auth_response.status_code != 200:
+    if not auth_response.ok:
         raise Exception(f"Failed to authenticate: {auth_response.text}")
         
     data = auth_response.json()
@@ -65,7 +66,7 @@ def authenticate():
     }
     acc_response = requests.get(accounts_url, headers=acc_headers)
     
-    if acc_response.status_code != 200:
+    if not acc_response.ok:
         raise Exception(f"Failed to fetch accounts: {acc_response.text}")
         
     accounts = acc_response.json().get("accounts", [])
@@ -128,7 +129,7 @@ def place_order(token, account_id, signal_data):
     # Some require routeId, others just accept the raw market payload
     response = requests.post(order_url, json=payload, headers=headers)
     
-    if response.status_code == 200:
+    if response.ok:
         print(f"Trade successfully placed! Tradelocker Order ID: {response.json().get('orderId', 'Unknown')}")
     else:
         print(f"Failed to place trade: {response.text}")
