@@ -21,7 +21,7 @@ SERVER = os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Live")
 INSTRUMENT_MAP = {
     "US30": 12345, # Example ID, you must fetch the real one via the API or dashboard
     "EURUSD": 67890,
-    "BTCUSD": 16711
+    "BTCUSD": 16720
 }
 
 def is_sabbath_mode_active():
