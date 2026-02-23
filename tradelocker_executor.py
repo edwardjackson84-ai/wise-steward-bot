@@ -75,14 +75,18 @@ def write_journal_entry(signal_data):
     print(json.dumps(journal_entry, indent=2))
 
 def close_position(token, account_id, acc_num, signal_data, target_close_side):
-    """Closes all open positions for the given symbol matching the side."""
+    """Closes all open positions for the given symbol matching the side, or all positions if target is 'all'."""
     symbol = signal_data.get("symbol")
-    instrument_id = INSTRUMENT_MAP.get(symbol)
-    if not instrument_id:
+    instrument_id = INSTRUMENT_MAP.get(symbol) if symbol else None
+    
+    if target_close_side != "all" and not instrument_id:
         print(f"Error: {symbol} is not mapped. Cannot close position.")
         return
         
-    print(f"Attempting to close {target_close_side} position(s) for {symbol}...")
+    if target_close_side == "all":
+        print("Attempting to close ALL open positions across the account...")
+    else:
+        print(f"Attempting to close {target_close_side} position(s) for {symbol}...")
     
     # Fetch open positions
     pos_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/positions"
@@ -113,23 +117,27 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
             pos_instrument_id = pos[1]
             pos_side = pos[3].lower()
             
-            if str(pos_instrument_id) == str(instrument_id):
-                target_side_tl = "buy" if target_close_side in ["long", "buy"] else "sell"
+            symbol_match = target_close_side == "all" or (str(pos_instrument_id) == str(instrument_id))
+            target_tl_side = "buy" if target_close_side in ["long", "buy"] else "sell"
+            side_match = target_close_side == "all" or (pos_side == target_tl_side)
+            
+            if symbol_match and side_match:
+                # Issue Global DELETE request to close the position
+                # Hankotrade's wrapper uses /trade/positions/{id} instead of /trade/accounts/
+                close_url = f"{TRADELOCKER_API_URL}/trade/positions/{pos_id}"
+                del_resp = requests.delete(close_url, headers=headers)
                 
-                if pos_side == target_side_tl:
-                    # Issue Global DELETE request to close the position
-                    # Hankotrade's wrapper uses /trade/positions/{id} instead of /trade/accounts/
-                    close_url = f"{TRADELOCKER_API_URL}/trade/positions/{pos_id}"
-                    del_resp = requests.delete(close_url, headers=headers)
-                    
-                    if del_resp.ok:
-                        print(f"Successfully closed {target_close_side} position ID: {pos_id}")
-                        positions_closed += 1
-                    else:
-                        print(f"Failed to close position ID {pos_id}: {del_resp.text}")
+                if del_resp.ok:
+                    print(f"Successfully closed position ID: {pos_id}")
+                    positions_closed += 1
+                else:
+                    print(f"Failed to close position ID {pos_id}: {del_resp.text}")
                     
     if positions_closed == 0:
-        print(f"No open {target_close_side} positions found for {symbol} to close.")
+        if target_close_side == "all":
+            print("No open positions found to close.")
+        else:
+            print(f"No open {target_close_side} positions found for {symbol} to close.")
 
 def place_order(token, account_id, acc_num, signal_data):
     """Place a market entry order on TradeLocker based on the webhook signal."""
@@ -224,13 +232,28 @@ def handle_webhook():
         # Action logic decoding
         action = data.get("action", "").lower()
         
-        # Check if this is an exit order (e.g., "close_long", "close_short")
-        if action in ["close_long", "close_short"]:
+        if action == "signal":
+            print(f"Signal received and logged: {data.get('signal')}")
+            
+        elif action == "close_all":
+            close_position(token, account_id, acc_num, data, "all")
+            
+        elif action == "close":
+            target_side = data.get("side", "").lower()
+            if target_side in ["long", "buy", "short", "sell"]:
+                close_position(token, account_id, acc_num, data, target_side)
+            else:
+                print(f"Warning: Close action received without valid side: {data}")
+                
+        elif action in ["close_long", "close_short"]:
             target_side = "long" if action == "close_long" else "short"
             close_position(token, account_id, acc_num, data, target_side)
             
-        # Check if it's an entry order (e.g., "buy", "sell", "entry")
+        elif action in ["buy", "sell", "entry"]:
+            place_order(token, account_id, acc_num, data)
+            
         else:
+            print(f"Warning: Unknown action '{action}'. Defaulting to place_order just in case.")
             place_order(token, account_id, acc_num, data)
             
         return jsonify({"status": "success", "message": "Trade processed"}), 200
