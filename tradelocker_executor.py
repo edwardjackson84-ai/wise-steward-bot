@@ -19,9 +19,12 @@ SERVER = os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Live")
 # Example mapping of TradingView symbols to TradeLocker Instrument IDs
 # You will need to query the TradeLocker instruments API to get the exact IDs for Hankotrade
 INSTRUMENT_MAP = {
-    "US30": 12345, # Example ID, you must fetch the real one via the API or dashboard
-    "EURUSD": 67890,
-    "BTCUSD": 16720
+    "US30": 17028, # Mapped from Hankotrade Demo API
+    "BTCUSD": 16720,
+    "EURUSD": 16985,
+    "GBPUSD": 16977,
+    "NAS100": 17035,
+    "SPX500": 17034
 }
 
 def is_sabbath_mode_active():
