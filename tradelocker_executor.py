@@ -94,6 +94,7 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
         return
         
     positions_data = resp.json()
+    print(f"DEBUG FETCH POSITIONS RAW: {json.dumps(positions_data)}")
     positions = []
     
     # TradeLocker API response structure handling
