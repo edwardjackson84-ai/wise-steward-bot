@@ -15,7 +15,6 @@ TRADELOCKER_API_URL = os.environ.get("TRADELOCKER_API_URL", "https://api.tradelo
 EMAIL = os.environ.get("TRADELOCKER_EMAIL", "your_email")
 PASSWORD = os.environ.get("TRADELOCKER_PASSWORD", "your_password")
 SERVER = os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Live")
-ACCOUNT_ID = os.environ.get("TRADELOCKER_ACC_NUM", "your_account_number")
 
 # Example mapping of TradingView symbols to TradeLocker Instrument IDs
 # You will need to query the TradeLocker instruments API to get the exact IDs for Hankotrade
@@ -41,7 +40,7 @@ def is_sabbath_mode_active():
     return False
 
 def authenticate():
-    """Authenticate with TradeLocker API and return JWT access token and account ID."""
+    """Authenticate with TradeLocker API and return JWT access token, account ID, and accNum."""
     print("Authenticating with TradeLocker...")
     auth_url = f"{TRADELOCKER_API_URL}/auth/jwt/token"
     payload = {
@@ -59,14 +58,29 @@ def authenticate():
     data = auth_response.json()
     token = data.get("accessToken")
     
-    # TradeLocker API now requires the accNum upfront for /trade/ endpoints.
-    # We bypass fetching the account list and use the explicit environment variable.
-    if ACCOUNT_ID == "your_account_number" or not ACCOUNT_ID:
-        raise Exception("TRADELOCKER_ACC_NUM environment variable is missing or invalid.")
-        
-    print(f"Authenticated successfully! Using Account ID: {ACCOUNT_ID}")
+    # Fetch all accounts associated with the token to get both UUID and accNum
+    accounts_url = f"{TRADELOCKER_API_URL}/auth/jwt/all-accounts"
+    acc_headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    acc_response = requests.get(accounts_url, headers=acc_headers)
     
-    return token, ACCOUNT_ID
+    if not acc_response.ok:
+        raise Exception(f"Failed to fetch accounts: {acc_response.text}")
+        
+    accounts = acc_response.json().get("accounts", [])
+    if not accounts:
+        raise Exception("No TradeLocker accounts found for this user.")
+        
+    # We assume the first account is the primary trading account
+    first_account = accounts[0]
+    account_id = first_account.get("id")
+    acc_num = first_account.get("accNum", "1")
+    
+    print(f"Authenticated successfully! Account ID: {account_id}, accNum: {acc_num}")
+    
+    return token, account_id, acc_num
 
 def write_journal_entry(signal_data):
     """Write an entry to the Journal of the Sovereign Arbitrator."""
@@ -80,7 +94,7 @@ def write_journal_entry(signal_data):
     }
     print(json.dumps(journal_entry, indent=2))
 
-def place_order(token, account_id, signal_data):
+def place_order(token, account_id, acc_num, signal_data):
     """Place a market order on TradeLocker based on the webhook signal."""
     symbol = signal_data.get("symbol")
     side = signal_data.get("side", "buy").lower()
@@ -96,7 +110,7 @@ def place_order(token, account_id, signal_data):
     order_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/orders"
     headers = {
         "Authorization": f"Bearer {token}",
-        "accNum": str(account_id),
+        "accNum": str(acc_num),
         "Content-Type": "application/json"
     }
     
@@ -146,10 +160,10 @@ def handle_webhook():
         write_journal_entry(data)
         
         # 2. Authenticate
-        token, account_id = authenticate()
+        token, account_id, acc_num = authenticate()
         
         # 3. Place Trade
-        place_order(token, account_id, data)
+        place_order(token, account_id, acc_num, data)
         
         return jsonify({"status": "success", "message": "Trade processed"}), 200
         
