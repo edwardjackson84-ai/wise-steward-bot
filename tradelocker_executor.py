@@ -117,55 +117,16 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
                 target_side_tl = "buy" if target_close_side in ["long", "buy"] else "sell"
                 
                 if pos_side == target_side_tl:
-                    success = False
-                    u1 = f"{pos_url}/{pos_id}"
+                    # Issue Global DELETE request to close the position
+                    # Hankotrade's wrapper uses /trade/positions/{id} instead of /trade/accounts/
+                    close_url = f"{TRADELOCKER_API_URL}/trade/positions/{pos_id}"
+                    del_resp = requests.delete(close_url, headers=headers)
                     
-                    print(f"Probing close strategies for Position {pos_id}...")
-                    
-                    # Probe 1: Standard DELETE
-                    r1 = requests.delete(u1, headers=headers)
-                    if r1.ok: success = True
-                    else: print(f"Probe 1 (Standard DELETE) failed: {r1.status_code} {r1.text}")
-                    
-                    if not success:
-                        qty = float(pos[4])
-                        r2 = requests.delete(u1, headers=headers, json={"qty": qty})
-                        if r2.ok: success = True
-                        else: print(f"Probe 2 (DELETE w/ qty) failed: {r2.status_code} {r2.text}")
-                        
-                    if not success:
-                        u3 = f"{TRADELOCKER_API_URL}/trade/positions/{pos_id}"
-                        r3 = requests.delete(u3, headers=headers)
-                        if r3.ok: success = True
-                        else: print(f"Probe 3 (Global DELETE) failed: {r3.status_code} {r3.text}")
-                        
-                    if not success:
-                        r4 = requests.patch(u1, headers=headers, json={"qty": 0})
-                        if r4.ok: success = True
-                        else: print(f"Probe 4 (PATCH closed) failed: {r4.status_code} {r4.text}")
-                        
-                    if not success:
-                        offset_order_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/orders"
-                        offset_side = "buy" if pos_side == "sell" else "sell"
-                        
-                        # First try without passing the positionId explicitly
-                        offset_payload = {
-                            "tradableInstrumentId": instrument_id,
-                            "qty": float(pos[4]),
-                            "side": offset_side,
-                            "type": "market",
-                            "validity": "IOC"
-                        }
-                        
-                        r5 = requests.post(offset_order_url, headers=headers, json=offset_payload)
-                        if r5.ok: success = True
-                        else: print(f"Probe 5 (Offset Market Order) failed: {r5.status_code} {r5.text}")
-
-                    if success:
+                    if del_resp.ok:
                         print(f"Successfully closed {target_close_side} position ID: {pos_id}")
                         positions_closed += 1
                     else:
-                        print(f"Failed to close position ID {pos_id}. All probes exhausted.")
+                        print(f"Failed to close position ID {pos_id}: {del_resp.text}")
                     
     if positions_closed == 0:
         print(f"No open {target_close_side} positions found for {symbol} to close.")
