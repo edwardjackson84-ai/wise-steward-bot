@@ -107,6 +107,32 @@ def place_order(token, account_id, acc_num, signal_data):
         
     print(f"Placing {tl_side} order for {symbol} (Instrument ID: {instrument_id})...")
     
+    # First, fetch the correct routeId for this instrument
+    instruments_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/instruments"
+    inst_headers = {
+        "Authorization": f"Bearer {token}",
+        "accNum": str(acc_num),
+        "Content-Type": "application/json"
+    }
+    inst_response = requests.get(instruments_url, headers=inst_headers)
+    route_id = None
+    if inst_response.ok:
+        data = inst_response.json()
+        inst_list = data.get("d", []) if isinstance(data, dict) else data
+        if isinstance(inst_list, dict) and "instruments" in inst_list:
+            inst_list = inst_list["instruments"]
+        
+        for inst in inst_list:
+            if isinstance(inst, dict) and inst.get("tradableInstrumentId") == instrument_id:
+                routes = inst.get("routes", [])
+                for r in routes:
+                    if r.get("type") == "TRADE":
+                        route_id = r.get("id")
+                        break
+    
+    if not route_id:
+        print(f"Warning: Could not dynamically fetch routeId for Instrument {instrument_id}. Attempting to proceed without it...")
+    
     order_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/orders"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -121,12 +147,14 @@ def place_order(token, account_id, acc_num, signal_data):
     
     payload = {
         "tradableInstrumentId": instrument_id,
-        "quantity": float(quantity),
+        "qty": float(quantity),
         "side": tl_side,
         "type": "market",
         "stopLoss": float(sl) if sl else None,
         "takeProfit": float(tp) if tp else None
     }
+    if route_id:
+        payload["routeId"] = route_id
     
     # Note: TradeLocker order payloads often vary slightly by broker routing
     # Some require routeId, others just accept the raw market payload
