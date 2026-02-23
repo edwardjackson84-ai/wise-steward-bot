@@ -150,6 +150,7 @@ def place_order(token, account_id, acc_num, signal_data):
         "qty": float(quantity),
         "side": tl_side,
         "type": "market",
+        "validity": "IOC",
         "stopLoss": float(sl) if sl else None,
         "takeProfit": float(tp) if tp else None
     }
