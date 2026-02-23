@@ -106,21 +106,24 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
         
     positions_closed = 0
     for pos in positions:
-        if isinstance(pos, dict) and pos.get("tradableInstrumentId") == instrument_id:
-            pos_side = pos.get("side", "").lower()
-            target_side_tl = "buy" if target_close_side in ["long", "buy"] else "sell"
+        # TradeLocker positions are arrays: [id, tradableInstrumentId, accountId, side, qty, price, sl, tp, timestamp...]
+        # Ex: ["7277816997856580016", "17028", "1555930", "sell", "0.01", "49414", null, ...]
+        if isinstance(pos, list) and len(pos) >= 5:
+            pos_id = pos[0]
+            pos_instrument_id = pos[1]
+            pos_side = pos[3].lower()
             
-            if pos_side == target_side_tl:
-                # Issue DELETE request to close the position
-                pos_id = pos.get("id")
-                close_url = f"{pos_url}/{pos_id}"
-                del_resp = requests.delete(close_url, headers=headers)
+            if str(pos_instrument_id) == str(instrument_id):
+                target_side_tl = "buy" if target_close_side in ["long", "buy"] else "sell"
                 
-                if del_resp.ok:
-                    print(f"Successfully closed {target_close_side} position ID: {pos_id}")
-                    positions_closed += 1
-                else:
-                    print(f"Failed to close position ID {pos_id}: {del_resp.text}")
+                if pos_side == target_side_tl:
+                    close_url = f"{pos_url}/{pos_id}"
+                    del_resp = requests.delete(close_url, headers=headers)
+                    if del_resp.ok:
+                        print(f"Successfully closed {target_close_side} position ID: {pos_id}")
+                        positions_closed += 1
+                    else:
+                        print(f"Failed to close position ID {pos_id}: {del_resp.text}")
                     
     if positions_closed == 0:
         print(f"No open {target_close_side} positions found for {symbol} to close.")
@@ -168,18 +171,25 @@ def place_order(token, account_id, acc_num, signal_data):
     sl = signal_data.get("sl", signal_data.get("initial_stop"))
     tp = signal_data.get("tp")
     
-    # Clear out empty string values from TradingView variables that didn't render
-    if sl == "" or sl == "NaN" or sl == None: sl = None
-    if tp == "" or tp == "NaN" or tp == None: tp = None
-    
+    # Safely convert sl and tp to float, ignoring TradingView string artifacts
+    try:
+        sl_float = float(sl) if sl and str(sl) != "NaN" and "{{" not in str(sl) else None
+    except ValueError:
+        sl_float = None
+        
+    try:
+        tp_float = float(tp) if tp and str(tp) != "NaN" and "{{" not in str(tp) else None
+    except ValueError:
+        tp_float = None
+        
     payload = {
         "tradableInstrumentId": instrument_id,
         "qty": float(quantity),
         "side": tl_side,
         "type": "market",
         "validity": "IOC",  # Required immediate-or-cancel for market
-        "stopLoss": float(sl) if sl else None,
-        "takeProfit": float(tp) if tp else None
+        "stopLoss": sl_float,
+        "takeProfit": tp_float
     }
     if route_id:
         payload["routeId"] = route_id
