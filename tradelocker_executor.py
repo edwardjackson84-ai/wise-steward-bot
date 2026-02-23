@@ -98,7 +98,7 @@ def place_order(token, account_id, acc_num, signal_data):
     """Place a market order on TradeLocker based on the webhook signal."""
     symbol = signal_data.get("symbol")
     side = signal_data.get("side", "buy").lower()
-    tl_side = "buy" if side == "long" else "sell"
+    tl_side = "buy" if side in ["long", "buy"] else "sell"
     
     instrument_id = INSTRUMENT_MAP.get(symbol)
     if not instrument_id:
