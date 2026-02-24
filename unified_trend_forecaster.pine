@@ -1,0 +1,149 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © WiseSteward & ChartPrime
+
+//@version=6
+indicator("Wise Steward - Trend Duration + MTF Forecaster", overlay = true)
+
+// ============================================================================
+// PART 1: CHARTPRIME TREND DURATION FORECAST
+// ============================================================================
+grp_duration = "Trend Duration Settings"
+length = input.int(50, title = "Smoothing Length", group=grp_duration, tooltip = "Defines how many bars are used for the Hull Moving Average (HMA).")
+trendLength = input.int(3, title = "Trend Detection Sensitivity", group=grp_duration, tooltip = "Controls how many consecutive bars are checked for rising/falling HMA slope.")
+samples = input.int(10, title = "Trend Sample Size", minval = 2, group=grp_duration, tooltip = "Defines how many past trend durations are stored.")
+
+coloUP = input.color(color.rgb(18, 228, 158), "↑ Trend", inline = "col", group=grp_duration)
+coloDN = input.color(color.rgb(236, 86, 16), "↓ Trend", inline = "col", group=grp_duration)
+
+var trend = bool(na)
+var TrendCount = 0
+var bullishCount = array.new<int>()
+var bearishCount = array.new<int>()
+
+var TrendUP = label(na)
+var TrendDN = label(na)
+var LengthLine = line(na)
+var LabelProbLen = label(na)
+
+series float hma = ta.hma(close, length)
+
+if barstate.isconfirmed
+    if ta.rising(hma, trendLength) 
+        trend := true
+    if ta.falling(hma, trendLength)
+        trend := false
+
+if trend or not trend 
+    TrendCount += 1
+
+if trend != trend[1]
+    LengthLine.delete()
+    LabelProbLen.delete()
+    TrendUP.set_tooltip("")
+    TrendDN.set_tooltip("")
+
+    if trend 
+        bearishCount.push(TrendCount)
+        TrendUP := label.new(bar_index, hma, "Trend ↑\nProbable Length: " + str.tostring(bullishCount.avg(), "##"), color = color.new(coloUP, 100), textcolor = coloUP, style = label.style_label_up)
+        TrendDN.set_text("Trend ↓\n" + str.tostring(TrendCount) + "\n")
+        LengthLine := line.new(bar_index - 1, hma[1], bar_index, hma[1], color = chart.fg_color, style = line.style_arrow_right)
+        LabelProbLen := label.new(bar_index, hma[1], "", style = label.style_label_up, textcolor = chart.fg_color, color = color.new(color.white, 100))
+    else 
+        bullishCount.push(TrendCount)
+        TrendDN := label.new(bar_index, hma, "Trend ↓\nProbable Length: " + str.tostring(bearishCount.avg(), "##"), color = color.new(coloDN, 100), textcolor = coloDN, style = label.style_label_down)
+        TrendUP.set_text("\n" + str.tostring(TrendCount) + "\nTrend ↑")
+        LengthLine := line.new(bar_index - 1, hma[1], bar_index, hma[1], color = chart.fg_color, style = line.style_arrow_right)
+        LabelProbLen := label.new(bar_index, hma[1], "", style = label.style_label_down, textcolor = chart.fg_color, color = color.new(color.white, 100))
+
+    TrendCount := 0
+
+if not trend
+    TrendDN.set_text("Trend ↓\nReal Length: " + str.tostring(TrendCount) + "\n")
+    LengthLine.set_x2(LengthLine.get_x1() + bearishCount.avg() + 1)
+    LabelProbLen.set_x(int(math.avg(LengthLine.get_x1(), LengthLine.get_x2())))
+    LabelProbLen.set_text("Probable Length\n" + str.tostring(bearishCount.avg(), "##"))
+else 
+    TrendUP.set_text("Trend ↑\nReal Length: " + str.tostring(TrendCount))
+    LengthLine.set_x2(LengthLine.get_x1() + bullishCount.avg() + 1)
+    LabelProbLen.set_x(int(math.avg(LengthLine.get_x1(), LengthLine.get_x2())))
+    LabelProbLen.set_text("Probable Length\n" + str.tostring(bullishCount.avg(), "##"))
+
+if bullishCount.size() > samples
+    bullishCount.shift()
+if bearishCount.size() > samples
+    bearishCount.shift()
+
+TColor = trend ? coloUP : coloDN
+plot(hma, "HMA", TColor, linewidth = 3)
+
+// ============================================================================
+// PART 2: WISE STEWARD MTF TREND FORECASTER DASHBOARD
+// ============================================================================
+grp_ma = "MTF Moving Average Settings"
+ma_fast_len = input.int(10, "Fast EMA Length", group=grp_ma)
+ma_slow_len = input.int(50, "Slow EMA Length", group=grp_ma)
+
+grp_tf = "Timeframe Selection"
+tf1 = input.timeframe("60", "Timeframe 1 (1H)", group=grp_tf)
+tf2 = input.timeframe("240", "Timeframe 2 (4H)", group=grp_tf)
+tf3 = input.timeframe("480", "Timeframe 3 (8H)", group=grp_tf)
+
+get_htf_trend(tf, fast_len, slow_len) =>
+    fast_ema = request.security(syminfo.tickerid, tf, ta.ema(close, fast_len))
+    slow_ema = request.security(syminfo.tickerid, tf, ta.ema(close, slow_len))
+    trend_dir = fast_ema > slow_ema ? 1 : fast_ema < slow_ema ? -1 : 0
+    trend_dir
+
+trend_1 = get_htf_trend(tf1, ma_fast_len, ma_slow_len)
+trend_2 = get_htf_trend(tf2, ma_fast_len, ma_slow_len)
+trend_3 = get_htf_trend(tf3, ma_fast_len, ma_slow_len)
+
+// HTF Alignment Score (-3 to +3)
+confluence = trend_1 + trend_2 + trend_3
+
+// Dashboard Drawing
+var table dash = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+
+getColor(t) =>
+    t == 1 ? color.new(color.green, 20) : t == -1 ? color.new(color.red, 20) : color.new(color.gray, 20)
+getText(t) =>
+    t == 1 ? "BULLISH" : t == -1 ? "BEARISH" : "NEUTRAL"
+
+if barstate.islast
+    table.cell(dash, 0, 0, "Timeframe", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    table.cell(dash, 1, 0, "Trend Status", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    
+    table.cell(dash, 0, 1, tf1, text_color=color.white)
+    table.cell(dash, 1, 1, getText(trend_1), text_color=color.white, bgcolor=getColor(trend_1))
+    
+    table.cell(dash, 0, 2, tf2, text_color=color.white)
+    table.cell(dash, 1, 2, getText(trend_2), text_color=color.white, bgcolor=getColor(trend_2))
+    
+    table.cell(dash, 0, 3, tf3, text_color=color.white)
+    table.cell(dash, 1, 3, getText(trend_3), text_color=color.white, bgcolor=getColor(trend_3))
+    
+    master_txt = confluence == 3 ? "STRONG BUY" : confluence == -3 ? "STRONG SELL" : "MIXED / NO TRADE"
+    master_col = confluence == 3 ? color.new(color.green, 0) : confluence == -3 ? color.new(color.red, 0) : color.new(color.orange, 0)
+    
+    table.cell(dash, 0, 4, "MASTER ALIGNMENT:", text_color=color.white)
+    table.cell(dash, 1, 4, master_txt, text_color=color.white, bgcolor=master_col)
+
+// ============================================================================
+// PART 3: UNIFIED SIGNALS (Trend Duration + HTF Confluence)
+// ============================================================================
+// For a Master Buy Signal: 
+// 1. Current Hull Moving Average must be trending UP (trend == true)
+// 2. All 3 Higher Timeframes must be BULLISH (confluence == 3)
+master_buy_signal = trend and confluence == 3 and not trend[1]
+
+// For a Master Sell Signal:
+// 1. Current Hull Moving Average must be trending DOWN (trend == false)
+// 2. All 3 Higher Timeframes must be BEARISH (confluence == -3)
+master_sell_signal = not trend and confluence == -3 and trend[1]
+
+// Optionally plot arrows when the unified signal criteria is met
+plotshape(master_buy_signal, title="Master Buy Signal", text="BUY", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.normal)
+plotshape(master_sell_signal, title="Master Sell Signal", text="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.normal)
+
+alertcondition(master_buy_signal, title="Unified BUY Alert", message='{"action": "buy", "symbol": "{{ticker}}"}')
+alertcondition(master_sell_signal, title="Unified SELL Alert", message='{"action": "sell", "symbol": "{{ticker}}"}')

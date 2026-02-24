@@ -1,0 +1,989 @@
+//@version=6
+indicator('Wise Steward Master System', overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ======================================================================
+// MODULE: first_20_min_strategy.pine
+// ======================================================================
+
+// --- Inputs ---
+sma20Length = input.int(20, "SMA 20 Length")
+sma60Length = input.int(60, "SMA 60 Length")
+sma200Length = input.int(200, "SMA 200 Length")
+elephantMultiplier = input.float(1.5, "Elephant Bar Multiplier (Size vs Avg)", minval=1.0)
+atrLength = input.int(14, "ATR Length")
+atrMultiplier = input.float(2.0, "ATR Multiplier for Trail", minval=0.5, step=0.1)
+useSMACrossExit = input.bool(true, "Use 20/60 SMA Cross as Exit")
+
+// --- Moving Averages ---
+sma20 = ta.sma(close, sma20Length)
+sma60 = ta.sma(close, sma60Length)
+sma200 = ta.sma(close, sma200Length)
+plot(sma20, color=color.blue, title="SMA 20 (Short)", linewidth=2)
+plot(sma60, color=color.orange, title="SMA 60 (Medium)", linewidth=2)
+plot(sma200, color=color.gray, title="SMA 200 (Long)", linewidth=2)
+
+// --- ATR Calculation ---
+atrValue = ta.atr(atrLength)
+
+// --- Define "Narrow State" ---
+maDiff = math.abs(sma20 - sma200) / sma200
+isNarrow = maDiff < 0.005
+
+// --- Detect Elephant Bars ---
+avgBody = ta.sma(math.abs(open - close), 20)
+isElephant = math.abs(open - close) > (avgBody * elephantMultiplier)
+barColor = isElephant ? (close > open ? color.new(color.green, 50) : color.new(color.red, 50)) : na
+barcolor(barColor)
+
+// --- First Bar of the Day Logic ---
+isNewDay = ta.change(time("D")) != 0
+var float firstBarHigh = na
+var float firstBarLow = na
+var bool setupValid = false
+
+if isNewDay
+    firstBarHigh := high
+    firstBarLow := low
+    setupValid := isElephant or (math.abs(high - low) > avgBody)
+
+
+// --- Elephant Retest 20 SMA ---
+bullElephantRetest = isElephant and (close > open) and (low <= sma20) and (close > sma20)
+bearElephantRetest = isElephant and (close < open) and (high >= sma20) and (close < sma20)
+alertcondition(bullElephantRetest, title="Elephant Buy (Retest 20SMA)", message='{"action": "buy", "symbol": "{{ticker}}", "signal": "elephant_buy"}')
+alertcondition(bearElephantRetest, title="Elephant Sell (Retest 20SMA)", message='{"action": "sell", "symbol": "{{ticker}}", "signal": "elephant_sell"}')
+
+// --- Entry Signals ---
+ov_longCondition = not isNewDay and not na(firstBarHigh) and ta.crossover(high, firstBarHigh) and setupValid and close > sma20
+ov_shortCondition = not isNewDay and not na(firstBarLow) and ta.crossunder(low, firstBarLow) and setupValid and close < sma20
+
+// --- Stop Loss Based on Previous Candle ---
+longStopLoss = low[1]
+shortStopLoss = high[1]
+
+// --- ATR Trailing Stop Logic ---
+var float longTrailStop = na
+var float shortTrailStop = na
+var bool inLongPosition = false
+var bool inShortPosition = false
+var float longEntryPrice = na
+var float shortEntryPrice = na
+
+// Exit conditions
+ov_longExit = false
+ov_shortExit = false
+longSMACrossExit = false
+shortSMACrossExit = false
+
+// Detect SMA crossovers
+sma20CrossUnder60 = ta.crossunder(sma20, sma60)
+sma20CrossOver60 = ta.crossover(sma20, sma60)
+
+// Long Position
+if ov_longCondition
+    inLongPosition := true
+    longTrailStop := longStopLoss
+    inShortPosition := false
+    longEntryPrice := close
+
+if inLongPosition
+    newTrailStop = close - (atrValue * atrMultiplier)
+    longTrailStop := math.max(longTrailStop, newTrailStop)
+    
+    // Check if ATR trailing stop is hit
+    if low <= longTrailStop
+        ov_longExit := true
+        inLongPosition := false
+        longTrailStop := na
+    
+    // Check if 20 SMA crosses under 60 SMA (bearish momentum shift)
+    if useSMACrossExit and sma20CrossUnder60
+        longSMACrossExit := true
+        inLongPosition := false
+        longTrailStop := na
+
+// Short Position
+if ov_shortCondition
+    inShortPosition := true
+    shortTrailStop := shortStopLoss
+    inLongPosition := false
+    shortEntryPrice := close
+
+if inShortPosition
+    newTrailStop = close + (atrValue * atrMultiplier)
+    shortTrailStop := math.min(shortTrailStop, newTrailStop)
+    
+    // Check if ATR trailing stop is hit
+    if high >= shortTrailStop
+        ov_shortExit := true
+        inShortPosition := false
+        shortTrailStop := na
+    
+    // Check if 20 SMA crosses over 60 SMA (bullish momentum shift)
+    if useSMACrossExit and sma20CrossOver60
+        shortSMACrossExit := true
+        inShortPosition := false
+        shortTrailStop := na
+
+// --- CLEAN PLOTS ---
+plot(inLongPosition ? longTrailStop : na, title="Long Trailing Stop", color=color.lime, linewidth=3, style=plot.style_line)
+plot(inShortPosition ? shortTrailStop : na, title="Short Trailing Stop", color=color.orange, linewidth=3, style=plot.style_line)
+
+// Entry signals
+plotshape(ov_longCondition, style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, title="Long Entry")
+plotshape(ov_shortCondition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Short Entry")
+
+// Exit signals - ATR Trailing Stop
+plotshape(ov_longExit, style=shape.xcross, location=location.abovebar, color=color.red, size=size.small, title="Long Exit - Trail Stop")
+plotshape(ov_shortExit, style=shape.xcross, location=location.belowbar, color=color.lime, size=size.small, title="Short Exit - Trail Stop")
+
+// Exit signals - SMA Cross
+plotshape(longSMACrossExit, style=shape.xcross, location=location.abovebar, color=color.purple, size=size.normal, title="Long Exit - SMA Cross")
+plotshape(shortSMACrossExit, style=shape.xcross, location=location.belowbar, color=color.purple, size=size.normal, title="Short Exit - SMA Cross")
+
+// --- Visual Aids ---
+bgcolor(isNarrow ? color.new(color.yellow, 90) : na, title="Narrow State Highlight")
+
+// Entry Labels
+if ov_longCondition
+    label.new(bar_index, low, "LONG\n" + str.tostring(close, format.mintick) + "\nStop: " + str.tostring(longStopLoss, format.mintick), 
+              color=color.lime, textcolor=color.black, style=label.style_label_up, size=size.small)
+    
+if ov_shortCondition
+    label.new(bar_index, high, "SHORT\n" + str.tostring(close, format.mintick) + "\nStop: " + str.tostring(shortStopLoss, format.mintick), 
+              color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// Exit Labels with P/L - ATR Trailing Stop
+if ov_longExit
+    profitLoss = close - longEntryPrice
+    profitPercent = (profitLoss / longEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = profitLoss >= 0 ? color.black : color.white
+    label.new(bar_index, high, "EXIT LONG (Trail)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=labelColor, textcolor=labelText, style=label.style_label_down, size=size.small)
+
+if ov_shortExit
+    profitLoss = shortEntryPrice - close
+    profitPercent = (profitLoss / shortEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = profitLoss >= 0 ? color.black : color.white
+    label.new(bar_index, low, "EXIT SHORT (Trail)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=labelColor, textcolor=labelText, style=label.style_label_up, size=size.small)
+
+// Exit Labels with P/L - SMA Cross
+if longSMACrossExit
+    profitLoss = close - longEntryPrice
+    profitPercent = (profitLoss / longEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = color.white
+    label.new(bar_index, high, "EXIT LONG (SMA X)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=color.purple, textcolor=labelText, style=label.style_label_down, size=size.small)
+
+if shortSMACrossExit
+    profitLoss = shortEntryPrice - close
+    profitPercent = (profitLoss / shortEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = color.white
+    label.new(bar_index, low, "EXIT SHORT (SMA X)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=color.purple, textcolor=labelText, style=label.style_label_up, size=size.small)
+
+// ======================================================================
+// MODULE: king_mtf_ict_fvg.pine
+// ======================================================================
+
+// ─────────── Inputs
+grpCore  = "Core"
+showBull = input.bool(true,  "Show Bullish FVG", group=grpCore)
+showBear = input.bool(true,  "Show Bearish FVG", group=grpCore)
+minPts   = input.float(0.0,  "Min Gap (price units)", tooltip="Minimum FVG size between source bars", group=grpCore)
+autoClean= input.bool(true,  "Auto-remove when filled", group=grpCore)
+
+grpMTF   = "Multi-Timeframe"
+useHTF   = input.bool(false, "Also show HTF FVGs", group=grpMTF)
+htf      = input.timeframe("60", "HTF for FVGs", group=grpMTF)
+
+grpStruct = "Structure (BOS/CHOCH)"
+pivotLen  = input.int(6, "Pivot length (left = right)", minval=1, group=grpStruct)
+showSwings= input.bool(false, "Plot swing markers", group=grpStruct)
+
+grpATR   = "ATR Risk/Reward"
+fvg_atrLen   = input.int(14, "ATR Length", minval=1, group=grpATR)
+atrST    = input.float(1.0, "ATR ST (stop) multiplier", step=0.1, group=grpATR)
+atrTP    = input.float(10.0, "ATR TP (target) multiplier", step=0.1, group=grpATR)
+
+grpViz   = "Visuals"
+showWicks= input.bool(false, "Draw FVG bounds (lines)", group=grpViz)
+opacityZ = input.int(80,      "Zone Opacity (0-100)", minval=0, maxval=100, group=grpViz)
+bullStyle= input.string("auto", "Bull Style", options=["auto","solid","hollow"], group=grpViz)
+bearStyle= input.string("auto", "Bear Style", options=["auto","solid","hollow"], group=grpViz)
+
+// ─────────── Helpers (FVG)
+f_fvgSignals(srcH, srcL) =>
+    bull = srcL > srcH[2] and (srcL - srcH[2]) >= minPts
+    bear = srcH < srcL[2] and (srcL[2] - srcH) >= minPts
+    bullTop = srcL
+    bullBot = srcH[2]
+    bearTop = srcL[2]
+    bearBot = srcH
+    [bull, bear, bullTop, bullBot, bearTop, bearBot]
+
+// ─────────── HTF Series (if used)
+f_htf(v) => request.security(syminfo.tickerid, htf, v, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+getH() => useHTF ? f_htf(high) : high
+getL() => useHTF ? f_htf(low)  : low
+
+// ─────────── Storage for FVG zones
+var box[] bullBoxes = array.new<box>()
+var box[] bearBoxes = array.new<box>()
+var line[] bullTops = array.new<line>()
+var line[] bullBots = array.new<line>()
+var line[] bearTops = array.new<line>()
+var line[] bearBots = array.new<line>()
+
+f_makeBox(x1, top, bot, isBull) =>
+    c = isBull ? color.new(color.teal, 100 - opacityZ) : color.new(color.red, 100 - opacityZ)
+    box.new(left=x1, top=top, right=bar_index, bottom=bot, border_color=color.new(color.gray, 70), bgcolor=c)
+
+f_extendLatest(bx) =>
+    box.set_right(bx, bar_index)
+
+f_makeBandLines(x1, top, bot, isBull) =>
+    lc = isBull ? color.new(color.teal, 0) : color.new(color.red, 0)
+    topLine = line.new(x1, top, bar_index, top, extend=extend.right, color=lc, width=1)
+    botLine = line.new(x1, bot, bar_index, bot, extend=extend.right, color=lc, width=1)
+    [topLine, botLine]
+
+// ─────────── Compute & render FVGs
+[isBullFVG, isBearFVG, bTop, bBot, sTop, sBot] = f_fvgSignals(getH(), getL())
+
+if barstate.isconfirmed
+    if isBullFVG and showBull
+        bx = f_makeBox(bar_index, bTop, bBot, true)
+        array.push(bullBoxes, bx)
+        if showWicks
+            [topL, botL] = f_makeBandLines(bar_index, bTop, bBot, true)
+            array.push(bullTops, topL)
+            array.push(bullBots, botL)
+        alert("Bullish FVG Created", alert.freq_once_per_bar_close)
+    if isBearFVG and showBear
+        bx = f_makeBox(bar_index, sTop, sBot, false)
+        array.push(bearBoxes, bx)
+        if showWicks
+            [topL, botL] = f_makeBandLines(bar_index, sTop, sBot, false)
+            array.push(bearTops, topL)
+            array.push(bearBots, botL)
+        alert("Bearish FVG Created", alert.freq_once_per_bar_close)
+
+f_updateAndCheck(_boxes, _isBull) =>
+    entered = false
+    filled = false
+    i = 0
+    while i < array.size(_boxes)
+        bx = array.get(_boxes, i)
+        t  = box.get_top(bx)
+        b  = box.get_bottom(bx)
+        top = math.max(t, b)
+        bot = math.min(t, b)
+        f_extendLatest(bx)
+        touched = high >= bot and low <= top
+        if touched
+            entered := true
+        fullyFilled = (_isBull and low <= bot) or (not _isBull and high >= top)
+        if fullyFilled
+            filled := true
+            if autoClean
+                array.remove(_boxes, i)
+                continue
+        i += 1
+    [entered, filled]
+
+[bullEntered, bullFilled] = f_updateAndCheck(bullBoxes, true)
+[bearEntered, bearFilled] = f_updateAndCheck(bearBoxes, false)
+
+barcolor(bullStyle=="hollow" and isBullFVG ? color.new(color.teal, 0) : na)
+barcolor(bearStyle=="hollow" and isBearFVG ? color.new(color.red, 0) : na)
+
+// ─────────── Structure: BOS / CHOCH (single pivot setting)
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low,  pivotLen, pivotLen)
+phBar = na(ph) ? na : bar_index - pivotLen
+plBar = na(pl) ? na : bar_index - pivotLen
+
+// Track last confirmed swing high/low
+var float lastSwingHigh = na
+var int   lastSwingHighBar = na
+var float lastSwingLow  = na
+var int   lastSwingLowBar = na
+
+if not na(ph)
+    lastSwingHigh := ph
+    lastSwingHighBar := phBar
+if not na(pl)
+    lastSwingLow := pl
+    lastSwingLowBar := plBar
+
+// Trend state and break detection
+var string fvg_trend = "none"        // "up" | "down" | "none"
+bosUp   = false
+bosDown = false
+chochUp = false
+chochDn = false
+
+upBreak   = not na(lastSwingHigh) and close > lastSwingHigh
+downBreak = not na(lastSwingLow)  and close < lastSwingLow
+
+if upBreak
+    if fvg_trend == "up"
+        bosUp := true
+    else
+        chochUp := true
+    fvg_trend := "up"
+if downBreak
+    if fvg_trend == "down"
+        bosDown := true
+    else
+        chochDn := true
+    fvg_trend := "down"
+
+// Check if pivot is inside any FVG
+f_isPivotInFVG(_boxes, pivotPrice) =>
+    inFVG = false
+    if array.size(_boxes) > 0
+        for i = 0 to array.size(_boxes) - 1
+            bx = array.get(_boxes, i)
+            t  = box.get_top(bx)
+            b  = box.get_bottom(bx)
+            top = math.max(t, b)
+            bot = math.min(t, b)
+            if pivotPrice >= bot and pivotPrice <= top
+                inFVG := true
+                break
+    inFVG
+
+pivotHighInBullFVG = not na(ph) and f_isPivotInFVG(bullBoxes, ph)
+pivotHighInBearFVG = not na(ph) and f_isPivotInFVG(bearBoxes, ph)
+pivotLowInBullFVG  = not na(pl) and f_isPivotInFVG(bullBoxes, pl)
+pivotLowInBearFVG  = not na(pl) and f_isPivotInFVG(bearBoxes, pl)
+
+// Optional swing markers
+plotshape(showSwings and not na(ph), title="Swing High",  style=shape.triangledown, location=location.abovebar, offset=-pivotLen, size=size.tiny, color=color.new(color.red, 0))
+plotshape(showSwings and not na(pl), title="Swing Low",   style=shape.triangleup,   location=location.belowbar, offset=-pivotLen, size=size.tiny, color=color.new(color.teal, 0))
+
+// ─────────── ATR-based ST/TP lines (default ST=1×ATR, TP=10×ATR)
+fvg_atr = ta.atr(fvg_atrLen)
+var string fvg_activeSide = "none"     // "long" | "short" | "none"
+var float fvg_entryPx = na
+var line  stLine  = na
+var line  tpLine  = na
+
+// When structure breaks, set a fresh 'entry' at close and draw new ST/TP
+newSignalLong  = chochUp or bosUp
+newSignalShort = chochDn or bosDown
+
+if newSignalLong
+    if not na(stLine)
+        line.delete(stLine)
+    if not na(tpLine)
+        line.delete(tpLine)
+    fvg_activeSide := "long"
+    fvg_entryPx := close
+    stPrice = fvg_entryPx - fvg_atr * atrST
+    tpPrice = fvg_entryPx + fvg_atr * atrTP
+    stLine := line.new(bar_index, stPrice, bar_index + 1, stPrice, extend=extend.right, color=color.red, width=2)
+    tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice, extend=extend.right, color=color.green, width=2)
+
+if newSignalShort
+    if not na(stLine)
+        line.delete(stLine)
+    if not na(tpLine)
+        line.delete(tpLine)
+    fvg_activeSide := "short"
+    fvg_entryPx := close
+    stPrice = fvg_entryPx + fvg_atr * atrST
+    tpPrice = fvg_entryPx - fvg_atr * atrTP
+    stLine := line.new(bar_index, stPrice, bar_index + 1, stPrice, extend=extend.right, color=color.red, width=2)
+    tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice, extend=extend.right, color=color.green, width=2)
+
+// ─────────── Alerts
+// FVG
+alertcondition(isBullFVG, title="Bullish FVG Created", message="Bullish FVG Created")
+alertcondition(isBearFVG, title="Bearish FVG Created", message="Bearish FVG Created")
+alertcondition(bullEntered, title="Price Enters Bullish FVG", message="Price entered a Bullish FVG")
+alertcondition(bearEntered, title="Price Enters Bearish FVG", message="Price entered a Bearish FVG")
+alertcondition(bullFilled,  title="Bullish FVG Filled", message="Bullish FVG fully filled/mitigated")
+alertcondition(bearFilled,  title="Bearish FVG Filled", message="Bearish FVG fully filled/mitigated")
+// Pivot in FVG
+alertcondition(pivotHighInBullFVG, title="Swing High in Bullish FVG", message="Swing High formed inside Bullish FVG")
+alertcondition(pivotHighInBearFVG, title="Swing High in Bearish FVG", message="Swing High formed inside Bearish FVG")
+alertcondition(pivotLowInBullFVG,  title="Swing Low in Bullish FVG", message="Swing Low formed inside Bullish FVG")
+alertcondition(pivotLowInBearFVG,  title="Swing Low in Bearish FVG", message="Swing Low formed inside Bearish FVG")
+// Structure
+alertcondition(bosUp,   title="BOS Up",   message="BOS Up (close broke above last swing high)")
+alertcondition(bosDown, title="BOS Down", message="BOS Down (close broke below last swing low)")
+alertcondition(chochUp, title="CHOCH Up", message="CHOCH Up (fvg_trend change to up)")
+alertcondition(chochDn, title="CHOCH Down", message="CHOCH Down (fvg_trend change to down)")
+
+// ─────────── One-line init label
+var label tagInit = na
+if barstate.isfirst
+    tagInit := label.new(bar_index, high, "King MTF + ICT FVG + BOS/CHOCH + ATR ST/TP (v6)", textcolor=color.white, style=label.style_label_down, color=color.new(color.black, 0))
+
+// ======================================================================
+// MODULE: king_david_multi_tf.pine
+// ======================================================================
+
+//======================== INPUTS ========================
+groupBOS   = "BOS Detectors"
+groupCHO   = "ChoCH Detectors"
+groupVWAP  = "VWAP/ADX Engine"
+groupRisk  = "Risk / Exits"
+groupMisc  = "Filters & Display"
+
+bosWidth   = input.int(2, "BOS Line Width",  minval=1, maxval=5, group=groupBOS)
+bosColBull = color.new(color.lime, 0)
+bosColBear = color.new(color.red,  0)
+
+bosEn1  = input.bool(true,  "BOS #1", group=groupBOS)
+bosLen1 = input.int (6,     "  Pivot #1", minval=1, maxval=10000, group=groupBOS)
+bosEn2  = input.bool(true,  "BOS #2", group=groupBOS)
+bosLen2 = input.int (40,    "  Pivot #2", minval=1, maxval=10000, group=groupBOS)
+bosEn3  = input.bool(true,  "BOS #3", group=groupBOS)
+bosLen3 = input.int (60,    "  Pivot #3", minval=1, maxval=10000, group=groupBOS)
+bosEn4  = input.bool(true,  "BOS #4", group=groupBOS)
+bosLen4 = input.int (80,    "  Pivot #4", minval=1, maxval=10000, group=groupBOS)
+bosEn5  = input.bool(true,  "BOS #5", group=groupBOS)
+bosLen5 = input.int (100,   "  Pivot #5", minval=1, maxval=10000, group=groupBOS)
+bosEn6  = input.bool(true,  "BOS #6", group=groupBOS)
+bosLen6 = input.int (120,   "  Pivot #6", minval=1, maxval=10000, group=groupBOS)
+bosEn7  = input.bool(true,  "BOS #7", group=groupBOS)
+bosLen7 = input.int (160,   "  Pivot #7", minval=1, maxval=10000, group=groupBOS)
+bosEn8  = input.bool(true,  "BOS #8", group=groupBOS)
+bosLen8 = input.int (200,   "  Pivot #8", minval=1, maxval=10000, group=groupBOS)
+
+choWidth   = input.int(2, "ChoCH Line Width", minval=1, maxval=5, group=groupCHO)
+choColBull = color.new(color.green, 0)
+choColBear = color.new(color.orange, 0)
+
+choEn1  = input.bool(true,  "ChoCH #1", group=groupCHO)
+choLen1 = input.int (201,   "  Pivot #1", minval=1, maxval=10000, group=groupCHO)
+choEn2  = input.bool(true,  "ChoCH #2", group=groupCHO)
+choLen2 = input.int (250,   "  Pivot #2", minval=1, maxval=10000, group=groupCHO)
+choEn3  = input.bool(true,  "ChoCH #3", group=groupCHO)
+choLen3 = input.int (300,   "  Pivot #3", minval=1, maxval=10000, group=groupCHO)
+choEn4  = input.bool(true,  "ChoCH #4", group=groupCHO)
+choLen4 = input.int (350,   "  Pivot #4", minval=1, maxval=10000, group=groupCHO)
+choEn5  = input.bool(true,  "ChoCH #5", group=groupCHO)
+choLen5 = input.int (400,   "  Pivot #5", minval=1, maxval=10000, group=groupCHO)
+
+// Display / behavior
+clipAtBreak     = input.bool(true, "Clip lines at breakout (no overhang)", group=groupMisc)
+requireConfl    = input.bool(true, "Require Structure Confluence for Entries", group=groupMisc)
+timeFilterOn    = input.bool(false, "Limit Trading Hours", group=groupMisc)
+startHour       = input.int(9, "Start Hour", minval=0, maxval=23, group=groupMisc)
+endHour         = input.int(16, "End Hour (exclusive)", minval=1, maxval=24, group=groupMisc)
+
+// VWAP/ADX
+vwapPeriod      = input.int(14, title='VWAP Period', group=groupVWAP)
+adxLen          = input.int(14, title='ADX Length', group=groupVWAP)
+adxEntry        = input.float(5.0, title='Min ADX to Allow Entry', group=groupVWAP)
+
+// Risk / Exits
+atrMultSL       = input.float(1.0, title='SL: ATR Multiplier', group=groupRisk)
+atrMultTP       = input.float(1.5, title='TP: ATR Multiplier', group=groupRisk)
+kd_atrLen          = input.int(14,  title='ATR Length', group=groupRisk)
+entryBufferBars = input.int(5,   title='Bars to Wait Between Entries', group=groupRisk)
+minVol          = input.float(0, title='Minimum Volume', group=groupRisk)
+includeUSD      = input.bool(true, "Include $ risk/reward in webhook JSON", group=groupRisk)
+
+// caps
+bosLineCap = 300
+choLineCap = 120
+bosLblCap  = 150
+choLblCap  = 60
+
+//======================== HELPERS ========================
+// End time clipper
+f_clipT2(_t1, _t2raw) =>
+    int t2r = clipAtBreak ? (_t2raw - 1) : _t2raw
+    math.max(_t1, t2r)
+
+// One left label at (t1,y)
+f_setLabelLeft(line _ln, string _txt, bool _isBull, color _col, label _lbl) =>
+    float y1 = line.get_y1(_ln)
+    var label lb = _lbl
+    if na(lb)
+        lb := label.new(line.get_x1(_ln), y1, _txt, xloc=xloc.bar_time, yloc=yloc.price, color=_col, style=_isBull ? label.style_label_up : label.style_label_down, textcolor=color.white)
+    else
+        label.set_x(lb, line.get_x1(_ln)), label.set_y(lb, y1), label.set_text(lb, _txt), label.set_style(lb, _isBull ? label.style_label_up : label.style_label_down), label.set_color(lb, _col)
+    lb
+
+// Create a razor-thin box segment at price y between t1..t2 (anti-drift)
+f_newSegBox(int _t1, int _t2, float _y, color _col) =>
+    float eps = math.max(syminfo.mintick * 0.001, 1e-10)
+    box.new(left=_t1, top=_y + eps, right=_t2, bottom=_y - eps, xloc=xloc.bar_time, border_color=_col, border_width=1, bgcolor=color.new(_col, 100), extend=extend.none)
+
+// Push box + label + remember T1/T2/Y for pinning
+f_pushBoxWithLabelTXY(_arrB, _arrLbl, _arrT1, _arrT2, _arrY, box _bx, int _t1, int _t2, float _y, string _txt, bool _isBull, color _col, int _cap) =>
+    line tmp = line.new(x1=_t1, y1=_y, x2=_t1, y2=_y, xloc=xloc.bar_time, extend=extend.none, color=_col, width=1)
+    label lb = f_setLabelLeft(tmp, _txt, _isBull, _col, na)
+    line.delete(tmp)
+    array.push(_arrB, _bx)
+    array.push(_arrLbl, lb)
+    array.push(_arrT1, _t1)
+    array.push(_arrT2, _t2)
+    array.push(_arrY,  _y)
+    while array.size(_arrB) > _cap
+        box.delete(array.shift(_arrB)), label.delete(array.shift(_arrLbl)), array.shift(_arrT1), array.shift(_arrT2), array.shift(_arrY)
+
+//======================== STORAGE ========================
+var float[]  bosLastHigh = array.new_float(8, na)
+var float[]  bosLastLow  = array.new_float(8, na)
+var int[]    bosPhTime   = array.new_int(8, na)
+var int[]    bosPlTime   = array.new_int(8, na)
+var string[] bosBias     = array.new_string(8, na)
+var box[]    bosBoxesAll = array.new_box()
+var label[]  bosLblsAll  = array.new_label()
+var int[]    bosT1All    = array.new_int()
+var int[]    bosT2All    = array.new_int()
+var float[]  bosYAll     = array.new_float()
+
+var float[]  choLastHigh = array.new_float(5, na)
+var float[]  choLastLow  = array.new_float(5, na)
+var int[]    choPhTime   = array.new_int(5, na)
+var int[]    choPlTime   = array.new_int(5, na)
+var string[] choBias     = array.new_string(5, na)
+var box[]    choBoxesAll = array.new_box()
+var label[]  choLblsAll  = array.new_label()
+var int[]    choT1All    = array.new_int()
+var int[]    choT2All    = array.new_int()
+var float[]  choYAll     = array.new_float()
+
+// Alert flags
+var bool bosBullTrig = false
+var bool bosBearTrig = false
+var bool choBullTrig = false
+var bool choBearTrig = false
+
+// lens + enables as arrays
+var int[]  bosLens = array.from(bosLen1, bosLen2, bosLen3, bosLen4, bosLen5, bosLen6, bosLen7, bosLen8)
+var bool[] bosEns  = array.from(bosEn1,  bosEn2,  bosEn3,  bosEn4,  bosEn5,  bosEn6,  bosEn7,  bosEn8)
+var int[]  choLens = array.from(choLen1, choLen2, choLen3, choLen4, choLen5)
+var bool[] choEns  = array.from(choEn1,  choEn2,  choEn3,  choEn4,  choEn5)
+
+//======================== PIVOTS ========================
+float ph1 = ta.pivothigh(high, bosLen1, bosLen1)
+float pl1 = ta.pivotlow (low,  bosLen1, bosLen1)
+float ph2 = ta.pivothigh(high, bosLen2, bosLen2)
+float pl2 = ta.pivotlow (low,  bosLen2, bosLen2)
+float ph3 = ta.pivothigh(high, bosLen3, bosLen3)
+float pl3 = ta.pivotlow (low,  bosLen3, bosLen3)
+float ph4 = ta.pivothigh(high, bosLen4, bosLen4)
+float pl4 = ta.pivotlow (low,  bosLen4, bosLen4)
+float ph5 = ta.pivothigh(high, bosLen5, bosLen5)
+float pl5 = ta.pivotlow (low,  bosLen5, bosLen5)
+float ph6 = ta.pivothigh(high, bosLen6, bosLen6)
+float pl6 = ta.pivotlow (low,  bosLen6, bosLen6)
+float ph7 = ta.pivothigh(high, bosLen7, bosLen7)
+float pl7 = ta.pivotlow (low,  bosLen7, bosLen7)
+float ph8 = ta.pivothigh(high, bosLen8, bosLen8)
+float pl8 = ta.pivotlow (low,  bosLen8, bosLen8)
+
+var float[] bosPhVals = array.new_float(8, na)
+var float[] bosPlVals = array.new_float(8, na)
+array.set(bosPhVals, 0, ph1), array.set(bosPlVals, 0, pl1)
+array.set(bosPhVals, 1, ph2), array.set(bosPlVals, 1, pl2)
+array.set(bosPhVals, 2, ph3), array.set(bosPlVals, 2, pl3)
+array.set(bosPhVals, 3, ph4), array.set(bosPlVals, 3, pl4)
+array.set(bosPhVals, 4, ph5), array.set(bosPlVals, 4, pl5)
+array.set(bosPhVals, 5, ph6), array.set(bosPlVals, 5, pl6)
+array.set(bosPhVals, 6, ph7), array.set(bosPlVals, 6, pl7)
+array.set(bosPhVals, 7, ph8), array.set(bosPlVals, 7, pl8)
+
+float phC1 = ta.pivothigh(high, choLen1, choLen1)
+float plC1 = ta.pivotlow (low,  choLen1, choLen1)
+float phC2 = ta.pivothigh(high, choLen2, choLen2)
+float plC2 = ta.pivotlow (low,  choLen2, choLen2)
+float phC3 = ta.pivothigh(high, choLen3, choLen3)
+float plC3 = ta.pivotlow (low,  choLen3, choLen3)
+float phC4 = ta.pivothigh(high, choLen4, choLen4)
+float plC4 = ta.pivotlow (low,  choLen4, choLen4)
+float phC5 = ta.pivothigh(high, choLen5, choLen5)
+float plC5 = ta.pivotlow (low,  choLen5, choLen5)
+
+var float[] choPhVals = array.new_float(5, na)
+var float[] choPlVals = array.new_float(5, na)
+array.set(choPhVals, 0, phC1), array.set(choPlVals, 0, plC1)
+array.set(choPhVals, 1, phC2), array.set(choPlVals, 1, plC2)
+array.set(choPhVals, 2, phC3), array.set(choPlVals, 2, plC3)
+array.set(choPhVals, 3, phC4), array.set(choPlVals, 3, plC4)
+array.set(choPhVals, 4, phC5), array.set(choPlVals, 4, plC5)
+
+//======================== CORE STRUCTURE ========================
+bosBullTrig := false
+bosBearTrig := false
+choBullTrig := false
+choBearTrig := false
+
+// ---------- BOS (wick-based, absolute time) ----------
+for i = 0 to 7
+    if array.get(bosEns, i)
+        len = array.get(bosLens, i)
+        ph  = array.get(bosPhVals, i)
+        pl  = array.get(bosPlVals, i)
+        if not na(ph)
+            array.set(bosLastHigh, i, ph), array.set(bosPhTime, i, time[len])
+        if not na(pl)
+            array.set(bosLastLow,  i, pl), array.set(bosPlTime, i, time[len])
+        lastHigh = array.get(bosLastHigh, i)
+        lastLow  = array.get(bosLastLow,  i)
+        tPh      = array.get(bosPhTime, i)
+        tPl      = array.get(bosPlTime, i)
+        bullBreak = not na(lastHigh) and ta.crossover(high, lastHigh)
+        bearBreak = not na(lastLow)  and ta.crossunder(low,  lastLow)
+        if bullBreak
+            int t1 = tPh, int t2 = f_clipT2(t1, time)
+            box b = f_newSegBox(t1, t2, lastHigh, bosColBull)
+            line l = line.new(x1=t1, y1=lastHigh, x2=t1, y2=lastHigh, xloc=xloc.bar_time, extend=extend.none, color=bosColBull, width=bosWidth)
+            f_pushBoxWithLabelTXY(bosBoxesAll, bosLblsAll, bosT1All, bosT2All, bosYAll, b, t1, t2, lastHigh, "BOS", true, bosColBull, math.min(bosLineCap, bosLblCap))
+            line.delete(l)
+            array.set(bosBias, i, "bull"), bosBullTrig := true
+        if bearBreak
+            int t1b = tPl, int t2b = f_clipT2(t1b, time)
+            box b2 = f_newSegBox(t1b, t2b, lastLow, bosColBear)
+            line l2 = line.new(x1=t1b, y1=lastLow, x2=t1b, y2=lastLow, xloc=xloc.bar_time, extend=extend.none, color=bosColBear, width=bosWidth)
+            f_pushBoxWithLabelTXY(bosBoxesAll, bosLblsAll, bosT1All, bosT2All, bosYAll, b2, t1b, t2b, lastLow, "BOS", false, bosColBear, math.min(bosLineCap, bosLblCap))
+            line.delete(l2)
+            array.set(bosBias, i, "bear"), bosBearTrig := true
+
+// ---------- ChoCH (wick-based flips, absolute time) ----------
+for j = 0 to 4
+    if array.get(choEns, j)
+        lenC = array.get(choLens, j)
+        phC  = array.get(choPhVals, j)
+        plC  = array.get(choPlVals, j)
+        if not na(phC)
+            array.set(choLastHigh, j, phC), array.set(choPhTime, j, time[lenC])
+        if not na(plC)
+            array.set(choLastLow,  j, plC), array.set(choPlTime, j, time[lenC])
+        lastHighC = array.get(choLastHigh, j)
+        lastLowC  = array.get(choLastLow,  j)
+        tPhC      = array.get(choPhTime, j)
+        tPlC      = array.get(choPlTime, j)
+        prevBias  = array.get(choBias, j)
+        if prevBias == "bear" and not na(lastHighC) and ta.crossover(high, lastHighC)
+            int t1c = tPhC, int t2c = f_clipT2(t1c, time)
+            box bc = f_newSegBox(t1c, t2c, lastHighC, choColBull)
+            line lc = line.new(x1=t1c, y1=lastHighC, x2=t1c, y2=lastHighC, xloc=xloc.bar_time, extend=extend.none, color=choColBull, width=choWidth)
+            f_pushBoxWithLabelTXY(choBoxesAll, choLblsAll, choT1All, choT2All, choYAll, bc, t1c, t2c, lastHighC, "ChoCH", true, choColBull, math.min(choLineCap, choLblCap))
+            line.delete(lc)
+            array.set(choBias, j, "bull"), choBullTrig := true
+        if prevBias == "bull" and not na(lastLowC) and ta.crossunder(low, lastLowC)
+            int t1d = tPlC, int t2d = f_clipT2(t1d, time)
+            box bd = f_newSegBox(t1d, t2d, lastLowC, choColBear)
+            line ld = line.new(x1=t1d, y1=lastLowC, x2=t1d, y2=lastLowC, xloc=xloc.bar_time, extend=extend.none, color=choColBear, width=choWidth)
+            f_pushBoxWithLabelTXY(choBoxesAll, choLblsAll, choT1All, choT2All, choYAll, bd, t1d, t2d, lastLowC, "ChoCH", false, choColBear, math.min(choLineCap, choLblCap))
+            line.delete(ld)
+            array.set(choBias, j, "bear"), choBearTrig := true
+
+// ======= Hard-pin every existing segment each bar (length-safe) =======
+int nBos = math.min(array.size(bosBoxesAll), math.min(array.size(bosT1All), array.size(bosT2All)))
+nBos := math.min(nBos, array.size(bosYAll))
+if nBos > 0
+    for k = 0 to nBos - 1
+        box bx = array.get(bosBoxesAll, k)
+        int t1  = array.get(bosT1All,    k)
+        int t2  = array.get(bosT2All,    k)
+        float yy = array.get(bosYAll,    k)
+        float eps = math.max(syminfo.mintick * 0.001, 1e-10)
+        if not na(bx)
+            box.set_left(bx,  t1), box.set_right(bx, t2), box.set_top(bx, yy + eps), box.set_bottom(bx, yy - eps)
+        label lb = k < array.size(bosLblsAll) ? array.get(bosLblsAll, k) : na
+        if not na(lb)
+            label.set_x(lb, t1), label.set_y(lb, yy)
+
+int nCho = math.min(array.size(choBoxesAll), math.min(array.size(choT1All), array.size(choT2All)))
+nCho := math.min(nCho, array.size(choYAll))
+if nCho > 0
+    for k = 0 to nCho - 1
+        box bx = array.get(choBoxesAll, k)
+        int t1  = array.get(choT1All,    k)
+        int t2  = array.get(choT2All,    k)
+        float yy = array.get(choYAll,    k)
+        float eps = math.max(syminfo.mintick * 0.001, 1e-10)
+        if not na(bx)
+            box.set_left(bx,  t1), box.set_right(bx, t2), box.set_top(bx, yy + eps), box.set_bottom(bx, yy - eps)
+        label lb = k < array.size(choLblsAll) ? array.get(choLblsAll, k) : na
+        if not na(lb)
+            label.set_x(lb, t1), label.set_y(lb, yy)
+
+// ======= Bias snapshot for confluence =======
+bosBullNow = false, bosBearNow = false
+for i = 0 to 7
+    b = array.get(bosBias, i)
+    bosBullNow := bosBullNow or (b == "bull")
+    bosBearNow := bosBearNow or (b == "bear")
+
+choBullNow = false, choBearNow = false
+for j = 0 to 4
+    b = array.get(choBias, j)
+    choBullNow := choBullNow or (b == "bull")
+    choBearNow := choBearNow or (b == "bear")
+
+structureBull = bosBullNow or choBullNow
+structureBear = bosBearNow or choBearNow
+
+//======================== VWAP / ADX ENGINE ========================
+vwap = ta.vwma(close, vwapPeriod)
+up = ta.change(high)
+down = -ta.change(low)
+plusDM = na(up) ? na : up > down and up > 0 ? up : 0
+minusDM = na(down) ? na : down > up and down > 0 ? down : 0
+trur = ta.rma(ta.tr, adxLen)
+plusDI = 100 * ta.rma(plusDM, adxLen) / trur
+minusDI = 100 * ta.rma(minusDM, adxLen) / trur
+dx = 100 * math.abs(plusDI - minusDI) / (plusDI + minusDI)
+adx = ta.rma(dx, adxLen)
+kd_atr = ta.atr(kd_atrLen)
+
+// === US30 ATR risk HUD (edit $/pt & size) ===
+usdPerPoint = input.float(1.00, "US30 $ per point (per contract)", step=0.01, group=groupRisk)
+contracts   = input.float(1.00, "Contracts", step=0.01, group=groupRisk)
+slPts       = kd_atr * atrMultSL
+tpPts       = kd_atr * atrMultTP
+riskUsd     = slPts * usdPerPoint * contracts
+rewardUsd   = tpPts * usdPerPoint * contracts
+rr          = tpPts / math.max(slPts, syminfo.mintick)
+plot(slPts,   "SL Distance (pts)", display=display.status_line)
+plot(riskUsd, "Risk ($)",          display=display.status_line)
+var label hud = na
+hudTxt = "ATR14=" + str.tostring(kd_atr, format.mintick) + " | SL=" + str.tostring(slPts, format.mintick) + " | TP=" + str.tostring(tpPts, format.mintick) + " | R:R=" + str.tostring(rr, format.mintick) + " | $Risk=" + str.tostring(riskUsd, format.mintick) + " | $Reward=" + str.tostring(rewardUsd, format.mintick)
+if na(hud)
+    hud := label.new(bar_index, high, hudTxt, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.new(color.gray, 20), textcolor=color.white)
+else
+    label.set_x(hud, bar_index), label.set_y(hud, high), label.set_text(hud, hudTxt), label.set_color(hud, color.new(color.gray, 20)), label.set_textcolor(hud, color.white)
+
+// === Make ATR available to placeholder-style alerts too
+plot(kd_atr, "ATR (alert)", display=display.none)
+
+// Entry filters
+volFilter = volume > minVol
+timeFilter = timeFilterOn ? (hour >= startHour and hour < endHour) : true
+var int lastEntryBar = na
+canEnter = na(lastEntryBar) or bar_index - lastEntryBar > entryBufferBars
+
+kd_longRaw  = close < vwap and adx > adxEntry and volFilter and timeFilter and canEnter
+kd_shortRaw = close > vwap and adx > adxEntry and volFilter and timeFilter and canEnter
+kd_longCondition  = requireConfl ? (kd_longRaw  and structureBull) : kd_longRaw
+kd_shortCondition = requireConfl ? (kd_shortRaw and structureBear) : kd_shortRaw
+
+// Exits (for alerts context) — now using separate multipliers
+longTP = close + kd_atr * atrMultTP
+longSL = close - kd_atr * atrMultSL
+shortTP = close - kd_atr * atrMultTP
+shortSL = close + kd_atr * atrMultSL
+
+//======================== PLOTS ========================
+plot(close, title="__anchor_to_price__", display=display.none)
+plot(vwap, title="VWAP")
+plotshape(kd_longCondition,  title='Long Ready',  location=location.belowbar, color=color.green, style=shape.triangleup,   size=size.tiny)
+plotshape(kd_shortCondition, title='Short Ready', location=location.abovebar, color=color.red,   style=shape.triangledown, size=size.tiny)
+
+// Entry buffer
+if kd_longCondition or kd_shortCondition
+    lastEntryBar := bar_index
+
+//======================== ALERTS ========================
+alertcondition(bosBullTrig, title="BOS Bullish",  message="BOS Bullish: price broke the last swing HIGH.")
+alertcondition(bosBearTrig, title="BOS Bearish",  message="BOS Bearish: price broke the last swing LOW.")
+alertcondition(choBullTrig, title="ChoCH Bullish", message="ChoCH Bullish: flip to BULL after breaking last swing HIGH.")
+alertcondition(choBearTrig, title="ChoCH Bearish", message="ChoCH Bearish: flip to BEAR after breaking last swing LOW.")
+
+plot(longSL,   "Long SL (alert)",   display=display.none)
+plot(longTP,   "Long TP (alert)",   display=display.none)
+plot(shortSL,  "Short SL (alert)",  display=display.none)
+plot(shortTP,  "Short TP (alert)",  display=display.none)
+plot(adx,      "ADX (alert)",       display=display.none)
+plot(vwap,     "VWAP (alert)",      display=display.none)
+plot(structureBull ? 1 : structureBear ? -1 : 0, "Structure Bias (alert)", display=display.none)
+plot(requireConfl ? 1 : 0, "Confluence Required (alert)", display=display.none)
+
+// --- JSON webhook builder (for "Any alert() function call")
+f_price(float v) => str.tostring(v, format.mintick)
+f_json(string side, float price, float sl, float tp) =>
+    float slp = math.abs(price - sl)
+    float tpp = math.abs(tp - price)
+    float rrp = tpp / math.max(slp, syminfo.mintick)
+    string base = '{"action":"entry","strategy":"King David Multi-TF","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","side":"' + side + '","price":' + f_price(price) + ',"sl":' + f_price(sl) + ',"tp":' + f_price(tp) + ',"kd_atr":' + f_price(kd_atr) + ',"atr_len":' + str.tostring(kd_atrLen) + ',"sl_mult":' + str.tostring(atrMultSL) + ',"tp_mult":' + str.tostring(atrMultTP) + ',"sl_points":' + f_price(slp) + ',"tp_points":' + f_price(tpp) + ',"rr":' + f_price(rrp)
+    string tail = includeUSD ? ',"usd_per_point":' + str.tostring(usdPerPoint) + ',"contracts":' + str.tostring(contracts) + ',"risk_usd":' + f_price(slp * usdPerPoint * contracts) + ',"reward_usd":' + f_price(tpp * usdPerPoint * contracts) : ""
+    base + tail + "}"
+
+alertcondition(kd_longCondition,  title="Long Entry",  message="VWAP Long Entry")
+alertcondition(kd_shortCondition, title="Short Entry", message="VWAP Short Entry")
+
+if barstate.isconfirmed and kd_longCondition
+    alert(f_json("long", close, longSL, longTP), alert.freq_once_per_bar_close)
+if barstate.isconfirmed and kd_shortCondition
+    alert(f_json("short", close, shortSL, shortTP), alert.freq_once_per_bar_close)
+
+longTPHit  = kd_longCondition  and high >= longTP
+longSLHit  = kd_longCondition  and low  <= longSL
+shortTPHit = kd_shortCondition and low  <= shortTP
+shortSLHit = kd_shortCondition and high >= shortSL
+alertcondition(longTPHit,  title="TP Hit Long",  message="Take profit triggered on long trade.")
+alertcondition(longSLHit,  title="SL Hit Long",  message="Stop loss triggered on long trade.")
+alertcondition(shortTPHit, title="TP Hit Short", message="Take profit triggered on short trade.")
+alertcondition(shortSLHit, title="SL Hit Short", message="Stop loss triggered on short trade.")
+
+endOfWeek = dayofweek == dayofweek.friday and hour == 13 and minute == 45
+alertcondition(endOfWeek, title="Close All Trades", message='{"action":"close_all"}')
+
+// ======================================================================
+// MODULE: unified_trend_forecaster.pine
+// ======================================================================
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © WiseSteward & ChartPrime
+
+
+// ============================================================================
+// PART 1: CHARTPRIME TREND DURATION FORECAST
+// ============================================================================
+grp_duration = "Trend Duration Settings"
+length = input.int(50, title = "Smoothing Length", group=grp_duration, tooltip = "Defines how many bars are used for the Hull Moving Average (HMA).")
+trendLength = input.int(3, title = "Trend Detection Sensitivity", group=grp_duration, tooltip = "Controls how many consecutive bars are checked for rising/falling HMA slope.")
+samples = input.int(10, title = "Trend Sample Size", minval = 2, group=grp_duration, tooltip = "Defines how many past cp_trend durations are stored.")
+
+coloUP = input.color(color.rgb(18, 228, 158), "↑ Trend", inline = "col", group=grp_duration)
+coloDN = input.color(color.rgb(236, 86, 16), "↓ Trend", inline = "col", group=grp_duration)
+
+var cp_trend = bool(na)
+var cp_TrendCount = 0
+var cp_bullishCount = array.new<int>()
+var cp_bearishCount = array.new<int>()
+
+var TrendUP = label(na)
+var TrendDN = label(na)
+var cp_LengthLine = line(na)
+var cp_LabelProbLen = label(na)
+
+series float hma = ta.hma(close, length)
+
+if barstate.isconfirmed
+    if ta.rising(hma, trendLength) 
+        cp_trend := true
+    if ta.falling(hma, trendLength)
+        cp_trend := false
+
+if cp_trend or not cp_trend 
+    cp_TrendCount += 1
+
+if cp_trend != cp_trend[1]
+    cp_LengthLine.delete()
+    cp_LabelProbLen.delete()
+    TrendUP.set_tooltip("")
+    TrendDN.set_tooltip("")
+
+    if cp_trend 
+        cp_bearishCount.push(cp_TrendCount)
+        TrendUP := label.new(bar_index, hma, "Trend ↑\nProbable Length: " + str.tostring(cp_bullishCount.avg(), "##"), color = color.new(coloUP, 100), textcolor = coloUP, style = label.style_label_up)
+        TrendDN.set_text("Trend ↓\n" + str.tostring(cp_TrendCount) + "\n")
+        cp_LengthLine := line.new(bar_index - 1, hma[1], bar_index, hma[1], color = chart.fg_color, style = line.style_arrow_right)
+        cp_LabelProbLen := label.new(bar_index, hma[1], "", style = label.style_label_up, textcolor = chart.fg_color, color = color.new(color.white, 100))
+    else 
+        cp_bullishCount.push(cp_TrendCount)
+        TrendDN := label.new(bar_index, hma, "Trend ↓\nProbable Length: " + str.tostring(cp_bearishCount.avg(), "##"), color = color.new(coloDN, 100), textcolor = coloDN, style = label.style_label_down)
+        TrendUP.set_text("\n" + str.tostring(cp_TrendCount) + "\nTrend ↑")
+        cp_LengthLine := line.new(bar_index - 1, hma[1], bar_index, hma[1], color = chart.fg_color, style = line.style_arrow_right)
+        cp_LabelProbLen := label.new(bar_index, hma[1], "", style = label.style_label_down, textcolor = chart.fg_color, color = color.new(color.white, 100))
+
+    cp_TrendCount := 0
+
+if not cp_trend
+    TrendDN.set_text("Trend ↓\nReal Length: " + str.tostring(cp_TrendCount) + "\n")
+    cp_LengthLine.set_x2(cp_LengthLine.get_x1() + cp_bearishCount.avg() + 1)
+    cp_LabelProbLen.set_x(int(math.avg(cp_LengthLine.get_x1(), cp_LengthLine.get_x2())))
+    cp_LabelProbLen.set_text("Probable Length\n" + str.tostring(cp_bearishCount.avg(), "##"))
+else 
+    TrendUP.set_text("Trend ↑\nReal Length: " + str.tostring(cp_TrendCount))
+    cp_LengthLine.set_x2(cp_LengthLine.get_x1() + cp_bullishCount.avg() + 1)
+    cp_LabelProbLen.set_x(int(math.avg(cp_LengthLine.get_x1(), cp_LengthLine.get_x2())))
+    cp_LabelProbLen.set_text("Probable Length\n" + str.tostring(cp_bullishCount.avg(), "##"))
+
+if cp_bullishCount.size() > samples
+    cp_bullishCount.shift()
+if cp_bearishCount.size() > samples
+    cp_bearishCount.shift()
+
+cp_TColor = cp_trend ? coloUP : coloDN
+plot(hma, "HMA", cp_TColor, linewidth = 3)
+
+// ============================================================================
+// PART 2: WISE STEWARD MTF TREND FORECASTER DASHBOARD
+// ============================================================================
+grp_ma = "MTF Moving Average Settings"
+ma_fast_len = input.int(10, "Fast EMA Length", group=grp_ma)
+ma_slow_len = input.int(50, "Slow EMA Length", group=grp_ma)
+
+grp_tf = "Timeframe Selection"
+tf1 = input.timeframe("60", "Timeframe 1 (1H)", group=grp_tf)
+tf2 = input.timeframe("240", "Timeframe 2 (4H)", group=grp_tf)
+tf3 = input.timeframe("480", "Timeframe 3 (8H)", group=grp_tf)
+
+get_htf_trend(tf, fast_len, slow_len) =>
+    fast_ema = request.security(syminfo.tickerid, tf, ta.ema(close, fast_len))
+    slow_ema = request.security(syminfo.tickerid, tf, ta.ema(close, slow_len))
+    trend_dir = fast_ema > slow_ema ? 1 : fast_ema < slow_ema ? -1 : 0
+    trend_dir
+
+trend_1 = get_htf_trend(tf1, ma_fast_len, ma_slow_len)
+trend_2 = get_htf_trend(tf2, ma_fast_len, ma_slow_len)
+trend_3 = get_htf_trend(tf3, ma_fast_len, ma_slow_len)
+
+// HTF Alignment Score (-3 to +3)
+utf_confluence = trend_1 + trend_2 + trend_3
+
+// Dashboard Drawing
+var table dash = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+
+getColor(t) =>
+    t == 1 ? color.new(color.green, 20) : t == -1 ? color.new(color.red, 20) : color.new(color.gray, 20)
+getText(t) =>
+    t == 1 ? "BULLISH" : t == -1 ? "BEARISH" : "NEUTRAL"
+
+if barstate.islast
+    table.cell(dash, 0, 0, "Timeframe", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    table.cell(dash, 1, 0, "Trend Status", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    
+    table.cell(dash, 0, 1, tf1, text_color=color.white)
+    table.cell(dash, 1, 1, getText(trend_1), text_color=color.white, bgcolor=getColor(trend_1))
+    
+    table.cell(dash, 0, 2, tf2, text_color=color.white)
+    table.cell(dash, 1, 2, getText(trend_2), text_color=color.white, bgcolor=getColor(trend_2))
+    
+    table.cell(dash, 0, 3, tf3, text_color=color.white)
+    table.cell(dash, 1, 3, getText(trend_3), text_color=color.white, bgcolor=getColor(trend_3))
+    
+    master_txt = utf_confluence == 3 ? "STRONG BUY" : utf_confluence == -3 ? "STRONG SELL" : "MIXED / NO TRADE"
+    master_col = utf_confluence == 3 ? color.new(color.green, 0) : utf_confluence == -3 ? color.new(color.red, 0) : color.new(color.orange, 0)
+    
+    table.cell(dash, 0, 4, "MASTER ALIGNMENT:", text_color=color.white)
+    table.cell(dash, 1, 4, master_txt, text_color=color.white, bgcolor=master_col)
+
+// ============================================================================
+// PART 3: UNIFIED SIGNALS (Trend Duration + HTF Confluence)
+// ============================================================================
+// For a Master Buy Signal: 
+// 1. Current Hull Moving Average must be trending UP (cp_trend == true)
+// 2. All 3 Higher Timeframes must be BULLISH (utf_confluence == 3)
+master_buy_signal = cp_trend and utf_confluence == 3 and not cp_trend[1]
+
+// For a Master Sell Signal:
+// 1. Current Hull Moving Average must be trending DOWN (cp_trend == false)
+// 2. All 3 Higher Timeframes must be BEARISH (utf_confluence == -3)
+master_sell_signal = not cp_trend and utf_confluence == -3 and cp_trend[1]
+
+// Optionally plot arrows when the unified signal criteria is met
+plotshape(master_buy_signal, title="Master Buy Signal", text="BUY", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.normal)
+plotshape(master_sell_signal, title="Master Sell Signal", text="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.normal)
+
+alertcondition(master_buy_signal, title="Unified BUY Alert", message='{"action": "buy", "symbol": "{{ticker}}"}')
+alertcondition(master_sell_signal, title="Unified SELL Alert", message='{"action": "sell", "symbol": "{{ticker}}"}')

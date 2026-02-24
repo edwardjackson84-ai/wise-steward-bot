@@ -1,0 +1,93 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © WiseSteward
+
+//@version=5
+indicator("Wise Steward - MTF Trend Forecaster [1H, 4H, 8H]", overlay=true)
+
+// ============================================================================
+// STRATEGY & PURPOSE
+// ============================================================================
+// This Trend Forecaster analyzes the market direction across three Higher
+// Time Frames (HTF) simultaneously: 1-Hour, 4-Hour, and 8-Hour.
+// 
+// It uses a combination of Exponential Moving Averages (EMA) to determine the 
+// dominant trend on each timeframe, and displays a unified dashboard on your 
+// chart. You can use this as a strict filter to ensure lower timeframe entries
+// (like the Oliver Velez 5m strategy) are trading WITH the macro trend.
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+grp_ma = "Moving Average Settings"
+ma_fast_len = input.int(10, "Fast EMA Length", group=grp_ma)
+ma_slow_len = input.int(50, "Slow EMA Length", group=grp_ma)
+
+grp_tf = "Timeframe Selection"
+tf1 = input.timeframe("60", "Timeframe 1 (1H)", group=grp_tf)
+tf2 = input.timeframe("240", "Timeframe 2 (4H)", group=grp_tf)
+tf3 = input.timeframe("480", "Timeframe 3 (8H)", group=grp_tf)
+
+// ============================================================================
+// CALCULATIONS (Higher Timeframe Requests)
+// ============================================================================
+// We need to request the EMA values from the higher timeframes.
+get_trend(tf, fast_len, slow_len) =>
+    // Request closing prices from HTF and calculate EMAs
+    fast_ema = request.security(syminfo.tickerid, tf, ta.ema(close, fast_len))
+    slow_ema = request.security(syminfo.tickerid, tf, ta.ema(close, slow_len))
+    
+    // Determine Trend: 1 = Bullish, -1 = Bearish
+    trend = fast_ema > slow_ema ? 1 : fast_ema < slow_ema ? -1 : 0
+    trend
+
+// Fetch the trends for all 3 configured timeframes
+trend_1 = get_trend(tf1, ma_fast_len, ma_slow_len)
+trend_2 = get_trend(tf2, ma_fast_len, ma_slow_len)
+trend_3 = get_trend(tf3, ma_fast_len, ma_slow_len)
+
+// Overall Confluence Score (-3 to +3)
+confluence = trend_1 + trend_2 + trend_3
+
+// ============================================================================
+// VISUAL DASHBOARD / UI
+// ============================================================================
+// Create a status table on the chart
+var table dash = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+
+getColor(t) =>
+    t == 1 ? color.new(color.green, 20) : t == -1 ? color.new(color.red, 20) : color.new(color.gray, 20)
+
+getText(t) =>
+    t == 1 ? "BULLISH" : t == -1 ? "BEARISH" : "NEUTRAL"
+
+if barstate.islast
+    // Header
+    table.cell(dash, 0, 0, "Timeframe", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    table.cell(dash, 1, 0, "Trend Status", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    
+    // Rows
+    table.cell(dash, 0, 1, tf1, text_color=color.white)
+    table.cell(dash, 1, 1, getText(trend_1), text_color=color.white, bgcolor=getColor(trend_1))
+    
+    table.cell(dash, 0, 2, tf2, text_color=color.white)
+    table.cell(dash, 1, 2, getText(trend_2), text_color=color.white, bgcolor=getColor(trend_2))
+    
+    table.cell(dash, 0, 3, tf3, text_color=color.white)
+    table.cell(dash, 1, 3, getText(trend_3), text_color=color.white, bgcolor=getColor(trend_3))
+    
+    // Master Alignment
+    master_txt = confluence == 3 ? "STRONG BUY" : confluence == -3 ? "STRONG SELL" : "MIXED / NO TRADE"
+    master_col = confluence == 3 ? color.new(color.green, 0) : confluence == -3 ? color.new(color.red, 0) : color.new(color.orange, 0)
+    
+    table.cell(dash, 0, 4, "MASTER ALIGNMENT:", text_color=color.white)
+    table.cell(dash, 1, 4, master_txt, text_color=color.white, bgcolor=master_col)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+// Fire alerts only when perfectly aligned across all 3 timeframes
+aligned_bull = confluence == 3 and confluence[1] < 3
+aligned_bear = confluence == -3 and confluence[1] > -3
+
+alertcondition(aligned_bull, title="HTF Bullish Alignment", message="All HTFs (1H, 4H, 8H) are now aligned Bullish.")
+alertcondition(aligned_bear, title="HTF Bearish Alignment", message="All HTFs (1H, 4H, 8H) are now aligned Bearish.")

@@ -1,0 +1,177 @@
+//@version=5
+indicator("Oliver Velez - First 20 Min Strategy", overlay=true, max_labels_count=500)
+
+// --- Inputs ---
+sma20Length = input.int(20, "SMA 20 Length")
+sma60Length = input.int(60, "SMA 60 Length")
+sma200Length = input.int(200, "SMA 200 Length")
+elephantMultiplier = input.float(1.5, "Elephant Bar Multiplier (Size vs Avg)", minval=1.0)
+atrLength = input.int(14, "ATR Length")
+atrMultiplier = input.float(2.0, "ATR Multiplier for Trail", minval=0.5, step=0.1)
+useSMACrossExit = input.bool(true, "Use 20/60 SMA Cross as Exit")
+
+// --- Moving Averages ---
+sma20 = ta.sma(close, sma20Length)
+sma60 = ta.sma(close, sma60Length)
+sma200 = ta.sma(close, sma200Length)
+plot(sma20, color=color.blue, title="SMA 20 (Short)", linewidth=2)
+plot(sma60, color=color.orange, title="SMA 60 (Medium)", linewidth=2)
+plot(sma200, color=color.gray, title="SMA 200 (Long)", linewidth=2)
+
+// --- ATR Calculation ---
+atrValue = ta.atr(atrLength)
+
+// --- Define "Narrow State" ---
+maDiff = math.abs(sma20 - sma200) / sma200
+isNarrow = maDiff < 0.005
+
+// --- Detect Elephant Bars ---
+avgBody = ta.sma(math.abs(open - close), 20)
+isElephant = math.abs(open - close) > (avgBody * elephantMultiplier)
+barColor = isElephant ? (close > open ? color.new(color.green, 50) : color.new(color.red, 50)) : na
+barcolor(barColor)
+
+// --- First Bar of the Day Logic ---
+isNewDay = ta.change(time("D")) != 0
+var float firstBarHigh = na
+var float firstBarLow = na
+var bool setupValid = false
+
+if isNewDay
+    firstBarHigh := high
+    firstBarLow := low
+    setupValid := isElephant or (math.abs(high - low) > avgBody)
+
+// --- Entry Signals ---
+longCondition = not isNewDay and not na(firstBarHigh) and ta.crossover(high, firstBarHigh) and setupValid and close > sma20
+shortCondition = not isNewDay and not na(firstBarLow) and ta.crossunder(low, firstBarLow) and setupValid and close < sma20
+
+// --- Stop Loss Based on Previous Candle ---
+longStopLoss = low[1]
+shortStopLoss = high[1]
+
+// --- ATR Trailing Stop Logic ---
+var float longTrailStop = na
+var float shortTrailStop = na
+var bool inLongPosition = false
+var bool inShortPosition = false
+var float longEntryPrice = na
+var float shortEntryPrice = na
+
+// Exit conditions
+longExit = false
+shortExit = false
+longSMACrossExit = false
+shortSMACrossExit = false
+
+// Detect SMA crossovers
+sma20CrossUnder60 = ta.crossunder(sma20, sma60)
+sma20CrossOver60 = ta.crossover(sma20, sma60)
+
+// Long Position
+if longCondition
+    inLongPosition := true
+    longTrailStop := longStopLoss
+    inShortPosition := false
+    longEntryPrice := close
+
+if inLongPosition
+    newTrailStop = close - (atrValue * atrMultiplier)
+    longTrailStop := math.max(longTrailStop, newTrailStop)
+    
+    // Check if ATR trailing stop is hit
+    if low <= longTrailStop
+        longExit := true
+        inLongPosition := false
+        longTrailStop := na
+    
+    // Check if 20 SMA crosses under 60 SMA (bearish momentum shift)
+    if useSMACrossExit and sma20CrossUnder60
+        longSMACrossExit := true
+        inLongPosition := false
+        longTrailStop := na
+
+// Short Position
+if shortCondition
+    inShortPosition := true
+    shortTrailStop := shortStopLoss
+    inLongPosition := false
+    shortEntryPrice := close
+
+if inShortPosition
+    newTrailStop = close + (atrValue * atrMultiplier)
+    shortTrailStop := math.min(shortTrailStop, newTrailStop)
+    
+    // Check if ATR trailing stop is hit
+    if high >= shortTrailStop
+        shortExit := true
+        inShortPosition := false
+        shortTrailStop := na
+    
+    // Check if 20 SMA crosses over 60 SMA (bullish momentum shift)
+    if useSMACrossExit and sma20CrossOver60
+        shortSMACrossExit := true
+        inShortPosition := false
+        shortTrailStop := na
+
+// --- CLEAN PLOTS ---
+plot(inLongPosition ? longTrailStop : na, title="Long Trailing Stop", color=color.lime, linewidth=3, style=plot.style_line)
+plot(inShortPosition ? shortTrailStop : na, title="Short Trailing Stop", color=color.orange, linewidth=3, style=plot.style_line)
+
+// Entry signals
+plotshape(longCondition, style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, title="Long Entry")
+plotshape(shortCondition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Short Entry")
+
+// Exit signals - ATR Trailing Stop
+plotshape(longExit, style=shape.xcross, location=location.abovebar, color=color.red, size=size.small, title="Long Exit - Trail Stop")
+plotshape(shortExit, style=shape.xcross, location=location.belowbar, color=color.lime, size=size.small, title="Short Exit - Trail Stop")
+
+// Exit signals - SMA Cross
+plotshape(longSMACrossExit, style=shape.xcross, location=location.abovebar, color=color.purple, size=size.normal, title="Long Exit - SMA Cross")
+plotshape(shortSMACrossExit, style=shape.xcross, location=location.belowbar, color=color.purple, size=size.normal, title="Short Exit - SMA Cross")
+
+// --- Visual Aids ---
+bgcolor(isNarrow ? color.new(color.yellow, 90) : na, title="Narrow State Highlight")
+
+// Entry Labels
+if longCondition
+    label.new(bar_index, low, "LONG\n" + str.tostring(close, format.mintick) + "\nStop: " + str.tostring(longStopLoss, format.mintick), 
+              color=color.lime, textcolor=color.black, style=label.style_label_up, size=size.small)
+    
+if shortCondition
+    label.new(bar_index, high, "SHORT\n" + str.tostring(close, format.mintick) + "\nStop: " + str.tostring(shortStopLoss, format.mintick), 
+              color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// Exit Labels with P/L - ATR Trailing Stop
+if longExit
+    profitLoss = close - longEntryPrice
+    profitPercent = (profitLoss / longEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = profitLoss >= 0 ? color.black : color.white
+    label.new(bar_index, high, "EXIT LONG (Trail)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=labelColor, textcolor=labelText, style=label.style_label_down, size=size.small)
+
+if shortExit
+    profitLoss = shortEntryPrice - close
+    profitPercent = (profitLoss / shortEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = profitLoss >= 0 ? color.black : color.white
+    label.new(bar_index, low, "EXIT SHORT (Trail)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=labelColor, textcolor=labelText, style=label.style_label_up, size=size.small)
+
+// Exit Labels with P/L - SMA Cross
+if longSMACrossExit
+    profitLoss = close - longEntryPrice
+    profitPercent = (profitLoss / longEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = color.white
+    label.new(bar_index, high, "EXIT LONG (SMA X)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=color.purple, textcolor=labelText, style=label.style_label_down, size=size.small)
+
+if shortSMACrossExit
+    profitLoss = shortEntryPrice - close
+    profitPercent = (profitLoss / shortEntryPrice) * 100
+    labelColor = profitLoss >= 0 ? color.lime : color.red
+    labelText = color.white
+    label.new(bar_index, low, "EXIT SHORT (SMA X)\n" + str.tostring(close, format.mintick) + "\nP/L: " + str.tostring(profitPercent, "#.##") + "%", 
+              color=color.purple, textcolor=labelText, style=label.style_label_up, size=size.small)
