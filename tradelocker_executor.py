@@ -182,7 +182,9 @@ def place_order(token, account_id, acc_num, signal_data):
     order_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/orders"
     
     # Parse generic defaults or Oliver Velez specific fields
-    quantity = signal_data.get("contracts", signal_data.get("qty", 1.0))
+    # Use environment variable for base lot size, defaulting to 0.01 if not set
+    base_lot_size = float(os.environ.get("BASE_LOT_SIZE", 0.01))
+    quantity = signal_data.get("contracts", signal_data.get("qty", base_lot_size))
     sl = signal_data.get("sl", signal_data.get("initial_stop"))
     tp = signal_data.get("tp")
     

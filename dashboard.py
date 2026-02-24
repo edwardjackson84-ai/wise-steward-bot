@@ -15,13 +15,124 @@ for directory in [ALERTS_DIR, JOURNAL_DIR, REPORTS_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
 
-st.set_page_config(page_title="Wise Steward Agent Dashboard", page_icon="🕊️", layout="wide")
+st.set_page_config(page_title="Wise Steward Agent Dashboard", page_icon="🧿", layout="wide")
 
-st.title("🕊️ Wise Steward Autonomous Agent")
-st.markdown("Visual Reasoning and Execution Monitoring Matrix")
+# Custom CSS for Apple/TradingView & Esoteric Aesthetic
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Cinzel:wght@500;700&display=swap');
+    
+    /* Background & Global Font */
+    .stApp {
+        background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #000000 100%);
+        font-family: 'Inter', sans-serif;
+        color: #e2e8f0;
+    }
+    
+    /* Elegant Title */
+    h1 {
+        font-family: 'Cinzel', serif;
+        font-size: 3rem !important;
+        background: -webkit-linear-gradient(45deg, #bfdbfe, #c084fc, #93c5fd);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-shadow: 0px 4px 20px rgba(192, 132, 252, 0.4);
+        margin-bottom: 0rem !important;
+    }
+    
+    /* Subtitle */
+    .subtitle {
+        font-family: 'Inter', sans-serif;
+        font-weight: 300;
+        letter-spacing: 2px;
+        color: #94a3b8;
+        font-size: 1.1rem;
+        margin-bottom: 2rem;
+        text-transform: uppercase;
+    }
+    
+    /* Glassmorphism Expanders / Cards */
+    div[data-testid="stExpander"] {
+        background: rgba(15, 23, 42, 0.6) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(148, 163, 184, 0.1) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3) !important;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    div[data-testid="stExpander"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 40px 0 rgba(192, 132, 252, 0.15) !important;
+        border: 1px solid rgba(192, 132, 252, 0.3) !important;
+    }
+    
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background-color: rgba(0, 0, 0, 0.8) !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    /* Metrics */
+    div[data-testid="stMetricValue"] {
+        font-family: 'Cinzel', serif;
+        color: #c084fc;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("🧿 Wise Steward")
+st.markdown('<p class="subtitle">Autonomous Trading & Visual Arbiter Protocol</p>', unsafe_allow_html=True)
 
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["Live Sentry Monitor", "Visual Journal", "Performance Reports"])
+
+st.sidebar.markdown("---")
+st.sidebar.title("Risk Management")
+
+# Load existing base lot size
+env_file = os.path.join(BASE_DIR, ".env")
+current_lot_size = 0.01
+if os.path.exists(env_file):
+    with open(env_file, "r") as f:
+        for line in f:
+            if line.startswith("BASE_LOT_SIZE="):
+                try:
+                    current_lot_size = float(line.strip().split("=")[1])
+                except:
+                    pass
+
+# Slider for lot size
+new_lot_size = st.sidebar.slider(
+    "Base Lot Size",
+    min_value=0.01,
+    max_value=5.00,
+    value=current_lot_size,
+    step=0.01,
+    help="Sets the BASE_LOT_SIZE for the TradeLocker executor. Only applies to signals without a forced quantity."
+)
+
+# Update .env file if changed
+if new_lot_size != current_lot_size:
+    lines = []
+    if os.path.exists(env_file):
+        with open(env_file, "r") as f:
+            lines = f.readlines()
+            
+    with open(env_file, "w") as f:
+        found = False
+        for line in lines:
+            if line.startswith("BASE_LOT_SIZE="):
+                f.write(f"BASE_LOT_SIZE={new_lot_size}\n")
+                found = True
+            else:
+                f.write(line)
+        if not found:
+            f.write(f"BASE_LOT_SIZE={new_lot_size}\n")
+    st.sidebar.success(f"Lot size updated to {new_lot_size}!")
+
+# Propagate to os.environ for immediately running scripts (if applicable)
+os.environ["BASE_LOT_SIZE"] = str(new_lot_size)
 
 def load_json_files(directory):
     files = glob.glob(os.path.join(directory, "*.json"))
