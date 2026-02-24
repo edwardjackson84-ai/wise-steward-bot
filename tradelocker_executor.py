@@ -184,6 +184,12 @@ def place_order(token, account_id, acc_num, signal_data):
     # Parse generic defaults or Oliver Velez specific fields
     # Use environment variable for base lot size, defaulting to 0.01 if not set
     base_lot_size = float(os.environ.get("BASE_LOT_SIZE", 0.01))
+    
+    # Check for symbol-specific lot size override
+    specific_lot = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
+    if specific_lot > 0.0:
+        base_lot_size = specific_lot
+        
     quantity = signal_data.get("contracts", signal_data.get("qty", base_lot_size))
     sl = signal_data.get("sl", signal_data.get("initial_stop"))
     tp = signal_data.get("tp")

@@ -24,19 +24,19 @@ st.markdown("""
     
     /* Background & Global Font */
     .stApp {
-        background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #000000 100%);
+        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 50%, #cbd5e1 100%);
         font-family: 'Inter', sans-serif;
-        color: #e2e8f0;
+        color: #1e293b;
     }
     
     /* Elegant Title */
     h1 {
         font-family: 'Cinzel', serif;
         font-size: 3rem !important;
-        background: -webkit-linear-gradient(45deg, #bfdbfe, #c084fc, #93c5fd);
+        background: -webkit-linear-gradient(45deg, #3b82f6, #8b5cf6, #06b6d4);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        text-shadow: 0px 4px 20px rgba(192, 132, 252, 0.4);
+        text-shadow: 0px 4px 20px rgba(139, 92, 246, 0.2);
         margin-bottom: 0rem !important;
     }
     
@@ -45,7 +45,7 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
         font-weight: 300;
         letter-spacing: 2px;
-        color: #94a3b8;
+        color: #475569;
         font-size: 1.1rem;
         margin-bottom: 2rem;
         text-transform: uppercase;
@@ -53,30 +53,32 @@ st.markdown("""
     
     /* Glassmorphism Expanders / Cards */
     div[data-testid="stExpander"] {
-        background: rgba(15, 23, 42, 0.6) !important;
+        background: rgba(255, 255, 255, 0.7) !important;
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(148, 163, 184, 0.1) !important;
+        border: 1px solid rgba(255, 255, 255, 0.5) !important;
         border-radius: 12px !important;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3) !important;
+        box-shadow: 0 4px 16px 0 rgba(0, 0, 0, 0.05) !important;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
+        color: #0f172a;
     }
     div[data-testid="stExpander"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 12px 40px 0 rgba(192, 132, 252, 0.15) !important;
-        border: 1px solid rgba(192, 132, 252, 0.3) !important;
+        box-shadow: 0 8px 24px 0 rgba(59, 130, 246, 0.1) !important;
+        border: 1px solid rgba(139, 92, 246, 0.3) !important;
     }
     
     /* Sidebar styling */
     section[data-testid="stSidebar"] {
-        background-color: rgba(0, 0, 0, 0.8) !important;
-        border-right: 1px solid rgba(255, 255, 255, 0.05);
+        background-color: rgba(248, 250, 252, 0.9) !important;
+        border-right: 1px solid rgba(0, 0, 0, 0.05);
+        color: #0f172a;
     }
     
     /* Metrics */
     div[data-testid="stMetricValue"] {
         font-family: 'Cinzel', serif;
-        color: #c084fc;
+        color: #8b5cf6;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -112,27 +114,69 @@ new_lot_size = st.sidebar.slider(
     help="Sets the BASE_LOT_SIZE for the TradeLocker executor. Only applies to signals without a forced quantity."
 )
 
+# Load existing specific lot sizes
+specific_lots = {"US30": 0.0, "NAS100": 0.0, "SPX": 0.0, "EURUSD": 0.0, "GBPUSD": 0.0}
+if os.path.exists(env_file):
+    with open(env_file, "r") as f:
+        for line in f:
+            if line.startswith("LOT_SIZE_"):
+                try:
+                    key, val = line.strip().split("=")
+                    symbol = key.replace("LOT_SIZE_", "")
+                    if symbol in specific_lots:
+                        specific_lots[symbol] = float(val)
+                except:
+                    pass
+
+# Sliders for specific lot sizes
+st.sidebar.markdown("---")
+st.sidebar.subheader("Asset-Specific Sets (0.0 = Base)")
+new_specific_lots = {}
+lots_changed = False
+
+for sym in specific_lots.keys():
+    new_val = st.sidebar.number_input(
+        f"{sym} Lot",
+        min_value=0.00,
+        max_value=50.00,
+        value=specific_lots[sym],
+        step=0.01,
+        help=f"Lot size for {sym}. Set to 0.0 to fallback to Base Lot Size."
+    )
+    new_specific_lots[sym] = new_val
+    if new_val != specific_lots[sym]:
+        lots_changed = True
+
 # Update .env file if changed
-if new_lot_size != current_lot_size:
+if new_lot_size != current_lot_size or lots_changed:
+    env_vars = {"BASE_LOT_SIZE": str(new_lot_size)}
+    for sym, val in new_specific_lots.items():
+        env_vars[f"LOT_SIZE_{sym}"] = str(val)
+        
     lines = []
     if os.path.exists(env_file):
         with open(env_file, "r") as f:
             lines = f.readlines()
             
     with open(env_file, "w") as f:
-        found = False
         for line in lines:
-            if line.startswith("BASE_LOT_SIZE="):
-                f.write(f"BASE_LOT_SIZE={new_lot_size}\n")
-                found = True
-            else:
+            line_key = line.split("=")[0] if "=" in line else ""
+            if line_key in env_vars:
+                # We will write these at the end
+                pass
+            elif line.strip():
                 f.write(line)
-        if not found:
-            f.write(f"BASE_LOT_SIZE={new_lot_size}\n")
-    st.sidebar.success(f"Lot size updated to {new_lot_size}!")
+                
+        # Write updated variables
+        for k, v in env_vars.items():
+            f.write(f"{k}={v}\n")
+            
+    st.sidebar.success("Risk settings updated!")
 
 # Propagate to os.environ for immediately running scripts (if applicable)
 os.environ["BASE_LOT_SIZE"] = str(new_lot_size)
+for k, v in new_specific_lots.items():
+    os.environ[f"LOT_SIZE_{k}"] = str(v)
 
 def load_json_files(directory):
     files = glob.glob(os.path.join(directory, "*.json"))
