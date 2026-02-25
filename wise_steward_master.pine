@@ -47,19 +47,21 @@ if isNewDay
     setupValid := isElephant or (math.abs(high - low) > avgBody)
 
 
+// --- Stop Loss Based on Previous Candle ---
+float longStopLoss = low[1]
+float shortStopLoss = high[1]
+
 // --- Elephant Retest 20 SMA ---
 bullElephantRetest = isElephant and (close > open) and (low <= sma20) and (close > sma20)
 bearElephantRetest = isElephant and (close < open) and (high >= sma20) and (close < sma20)
-alertcondition(bullElephantRetest, title="Elephant Buy (Retest 20SMA)", message='{"action": "buy", "symbol": "{{ticker}}", "signal": "elephant_buy"}')
-alertcondition(bearElephantRetest, title="Elephant Sell (Retest 20SMA)", message='{"action": "sell", "symbol": "{{ticker}}", "signal": "elephant_sell"}')
+if bullElephantRetest and timeframe.period == "3"
+    alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(longStopLoss) + '", "tp": "' + str.tostring(close + (close - longStopLoss) * 2) + '", "signal": "elephant_buy"}', alert.freq_once_per_bar_close)
+if bearElephantRetest and timeframe.period == "3"
+    alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(shortStopLoss) + '", "tp": "' + str.tostring(close - (shortStopLoss - close) * 2) + '", "signal": "elephant_sell"}', alert.freq_once_per_bar_close)
 
 // --- Entry Signals ---
 ov_longCondition = not isNewDay and not na(firstBarHigh) and ta.crossover(high, firstBarHigh) and setupValid and close > sma20
 ov_shortCondition = not isNewDay and not na(firstBarLow) and ta.crossunder(low, firstBarLow) and setupValid and close < sma20
-
-// --- Stop Loss Based on Previous Candle ---
-longStopLoss = low[1]
-shortStopLoss = high[1]
 
 // --- ATR Trailing Stop Logic ---
 var float longTrailStop = na
@@ -332,6 +334,9 @@ chochDn = false
 upBreak   = not na(lastSwingHigh) and close > lastSwingHigh
 downBreak = not na(lastSwingLow)  and close < lastSwingLow
 
+bullishSweep = not na(lastSwingLow) and low < lastSwingLow and close > lastSwingLow
+bearishSweep = not na(lastSwingHigh) and high > lastSwingHigh and close < lastSwingHigh
+
 if upBreak
     if fvg_trend == "up"
         bosUp := true
@@ -405,23 +410,26 @@ if newSignalShort
     tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice, extend=extend.right, color=color.green, width=2)
 
 // ─────────── Alerts
-// FVG
-alertcondition(isBullFVG, title="Bullish FVG Created", message="Bullish FVG Created")
-alertcondition(isBearFVG, title="Bearish FVG Created", message="Bearish FVG Created")
-alertcondition(bullEntered, title="Price Enters Bullish FVG", message="Price entered a Bullish FVG")
-alertcondition(bearEntered, title="Price Enters Bearish FVG", message="Price entered a Bearish FVG")
-alertcondition(bullFilled,  title="Bullish FVG Filled", message="Bullish FVG fully filled/mitigated")
-alertcondition(bearFilled,  title="Bearish FVG Filled", message="Bearish FVG fully filled/mitigated")
-// Pivot in FVG
-alertcondition(pivotHighInBullFVG, title="Swing High in Bullish FVG", message="Swing High formed inside Bullish FVG")
-alertcondition(pivotHighInBearFVG, title="Swing High in Bearish FVG", message="Swing High formed inside Bearish FVG")
-alertcondition(pivotLowInBullFVG,  title="Swing Low in Bullish FVG", message="Swing Low formed inside Bullish FVG")
-alertcondition(pivotLowInBearFVG,  title="Swing Low in Bearish FVG", message="Swing Low formed inside Bearish FVG")
-// Structure
-alertcondition(bosUp,   title="BOS Up",   message="BOS Up (close broke above last swing high)")
-alertcondition(bosDown, title="BOS Down", message="BOS Down (close broke below last swing low)")
-alertcondition(chochUp, title="CHOCH Up", message="CHOCH Up (fvg_trend change to up)")
-alertcondition(chochDn, title="CHOCH Down", message="CHOCH Down (fvg_trend change to down)")
+// ─────────── Dynamic JSON Alerts
+// FVG Features
+if isBullFVG
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "Bullish FVG Created", "price": "' + str.tostring(close) + '"}', alert.freq_once_per_bar_close)
+if isBearFVG
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "Bearish FVG Created", "price": "' + str.tostring(close) + '"}', alert.freq_once_per_bar_close)
+if bullEntered or bearEntered
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "Price Entered FVG", "price": "' + str.tostring(close) + '"}', alert.freq_once_per_bar_close)
+if bullFilled or bearFilled
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "FVG Filled"}', alert.freq_once_per_bar_close)
+
+// Structure Features
+if bosUp and timeframe.period == "15"
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "signal_type": "Break of Structure UP", "signal": "visual_verify_bos_up"}', alert.freq_once_per_bar_close)
+if bosDown and timeframe.period == "15"
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "signal_type": "Break of Structure DOWN", "signal": "visual_verify_bos_down"}', alert.freq_once_per_bar_close)
+if chochUp and (timeframe.period == "15" or timeframe.period == "3")
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "Change of Character UP", "price": "' + str.tostring(close) + '"}', alert.freq_once_per_bar_close)
+if chochDn and (timeframe.period == "15" or timeframe.period == "3")
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "Change of Character DOWN", "price": "' + str.tostring(close) + '"}', alert.freq_once_per_bar_close)
 
 // ─────────── One-line init label
 var label tagInit = na
@@ -628,12 +636,12 @@ choBearTrig := false
 for i = 0 to 7
     if array.get(bosEns, i)
         len = array.get(bosLens, i)
-        ph  = array.get(bosPhVals, i)
-        pl  = array.get(bosPlVals, i)
-        if not na(ph)
-            array.set(bosLastHigh, i, ph), array.set(bosPhTime, i, time[len])
-        if not na(pl)
-            array.set(bosLastLow,  i, pl), array.set(bosPlTime, i, time[len])
+        tempPh  = array.get(bosPhVals, i)
+        tempPl  = array.get(bosPlVals, i)
+        if not na(tempPh)
+            array.set(bosLastHigh, i, tempPh), array.set(bosPhTime, i, time[len])
+        if not na(tempPl)
+            array.set(bosLastLow,  i, tempPl), array.set(bosPlTime, i, time[len])
         lastHigh = array.get(bosLastHigh, i)
         lastLow  = array.get(bosLastLow,  i)
         tPh      = array.get(bosPhTime, i)
@@ -793,10 +801,14 @@ if kd_longCondition or kd_shortCondition
     lastEntryBar := bar_index
 
 //======================== ALERTS ========================
-alertcondition(bosBullTrig, title="BOS Bullish",  message="BOS Bullish: price broke the last swing HIGH.")
-alertcondition(bosBearTrig, title="BOS Bearish",  message="BOS Bearish: price broke the last swing LOW.")
-alertcondition(choBullTrig, title="ChoCH Bullish", message="ChoCH Bullish: flip to BULL after breaking last swing HIGH.")
-alertcondition(choBearTrig, title="ChoCH Bearish", message="ChoCH Bearish: flip to BEAR after breaking last swing LOW.")
+if bosBullTrig and (timeframe.period == "15" or timeframe.period == "3")
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "BOS Bullish"}', alert.freq_once_per_bar_close)
+if bosBearTrig and (timeframe.period == "15" or timeframe.period == "3")
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "BOS Bearish"}', alert.freq_once_per_bar_close)
+if choBullTrig and (timeframe.period == "15" or timeframe.period == "3")
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "ChoCH Bullish"}', alert.freq_once_per_bar_close)
+if choBearTrig and (timeframe.period == "15" or timeframe.period == "3")
+    alert('{"action": "signal", "symbol": "' + syminfo.ticker + '", "signal_type": "ChoCH Bearish"}', alert.freq_once_per_bar_close)
 
 plot(longSL,   "Long SL (alert)",   display=display.none)
 plot(longTP,   "Long TP (alert)",   display=display.none)
@@ -817,8 +829,7 @@ f_json(string side, float price, float sl, float tp) =>
     string tail = includeUSD ? ',"usd_per_point":' + str.tostring(usdPerPoint) + ',"contracts":' + str.tostring(contracts) + ',"risk_usd":' + f_price(slp * usdPerPoint * contracts) + ',"reward_usd":' + f_price(tpp * usdPerPoint * contracts) : ""
     base + tail + "}"
 
-alertcondition(kd_longCondition,  title="Long Entry",  message="VWAP Long Entry")
-alertcondition(kd_shortCondition, title="Short Entry", message="VWAP Short Entry")
+// Note: kd_longCondition and kd_shortCondition alerts are handled by the f_json block below.
 
 if barstate.isconfirmed and kd_longCondition
     alert(f_json("long", close, longSL, longTP), alert.freq_once_per_bar_close)
@@ -829,13 +840,15 @@ longTPHit  = kd_longCondition  and high >= longTP
 longSLHit  = kd_longCondition  and low  <= longSL
 shortTPHit = kd_shortCondition and low  <= shortTP
 shortSLHit = kd_shortCondition and high >= shortSL
-alertcondition(longTPHit,  title="TP Hit Long",  message="Take profit triggered on long trade.")
-alertcondition(longSLHit,  title="SL Hit Long",  message="Stop loss triggered on long trade.")
-alertcondition(shortTPHit, title="TP Hit Short", message="Take profit triggered on short trade.")
-alertcondition(shortSLHit, title="SL Hit Short", message="Stop loss triggered on short trade.")
+
+if longTPHit or longSLHit
+    alert('{"action": "close_long", "symbol": "' + syminfo.ticker + '", "message": "Long TP/SL Hit"}', alert.freq_once_per_bar_close)
+if shortTPHit or shortSLHit
+    alert('{"action": "close_short", "symbol": "' + syminfo.ticker + '", "message": "Short TP/SL Hit"}', alert.freq_once_per_bar_close)
 
 endOfWeek = dayofweek == dayofweek.friday and hour == 13 and minute == 45
-alertcondition(endOfWeek, title="Close All Trades", message='{"action":"close_all"}')
+if endOfWeek
+    alert('{"action": "close_all", "message": "Sabbath/End of Week close triggered. All positions liquidated."}', alert.freq_once_per_bar)
 
 // ======================================================================
 // MODULE: unified_trend_forecaster.pine
@@ -985,5 +998,47 @@ master_sell_signal = not cp_trend and utf_confluence == -3 and cp_trend[1]
 plotshape(master_buy_signal, title="Master Buy Signal", text="BUY", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.normal)
 plotshape(master_sell_signal, title="Master Sell Signal", text="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.normal)
 
-alertcondition(master_buy_signal, title="Unified BUY Alert", message='{"action": "buy", "symbol": "{{ticker}}"}')
-alertcondition(master_sell_signal, title="Unified SELL Alert", message='{"action": "sell", "symbol": "{{ticker}}"}')
+if master_buy_signal
+    // Assuming ATR based SL for Unified Signal
+    float masterLongSL = close - ta.atr(14) * 2
+    float masterLongTP = close + (close - masterLongSL) * 2
+    alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(masterLongSL) + '", "tp": "' + str.tostring(masterLongTP) + '", "signal": "long_entry"}', alert.freq_once_per_bar_close)
+    
+if master_sell_signal
+    float masterShortSL = close + ta.atr(14) * 2
+    float masterShortTP = close - (masterShortSL - close) * 2
+    alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(masterShortSL) + '", "tp": "' + str.tostring(masterShortTP) + '", "signal": "short_entry"}', alert.freq_once_per_bar_close)
+
+// ============================================================================
+// PART 4: FVG + LIQUIDITY GRAB CONFLUENCE (3M / 15M)
+// ============================================================================
+// Check if current price is inside any existing FVG
+f_isPriceInFVG(_boxes, _price) =>
+    inFVG = false
+    if array.size(_boxes) > 0
+        for i = 0 to array.size(_boxes) - 1
+            bx = array.get(_boxes, i)
+            t  = box.get_top(bx)
+            b  = box.get_bottom(bx)
+            top = math.max(t, b)
+            bot = math.min(t, b)
+            if _price >= bot and _price <= top
+                inFVG := true
+                break
+    inFVG
+
+fvg_buy_confluence = bullishSweep and (f_isPriceInFVG(bullBoxes, close) or f_isPriceInFVG(bullBoxes, low))
+fvg_sell_confluence = bearishSweep and (f_isPriceInFVG(bearBoxes, close) or f_isPriceInFVG(bearBoxes, high))
+
+plotshape(fvg_buy_confluence, title="FVG + Sweep Buy", text="FVG\nSWEEP", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.white, size=size.large)
+plotshape(fvg_sell_confluence, title="FVG + Sweep Sell", text="FVG\nSWEEP", style=shape.triangledown, location=location.abovebar, color=color.new(color.fuchsia, 0), textcolor=color.white, size=size.large)
+
+if fvg_buy_confluence and (timeframe.period == "15" or timeframe.period == "3")
+    float sweepLongSL = low - ta.atr(14)
+    float sweepLongTP = close + (close - sweepLongSL) * 2
+    alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(sweepLongSL) + '", "tp": "' + str.tostring(sweepLongTP) + '", "signal": "fvg_sweep_buy"}', alert.freq_once_per_bar_close)
+
+if fvg_sell_confluence and (timeframe.period == "15" or timeframe.period == "3")
+    float sweepShortSL = high + ta.atr(14)
+    float sweepShortTP = close - (sweepShortSL - close) * 2
+    alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(sweepShortSL) + '", "tp": "' + str.tostring(sweepShortTP) + '", "signal": "fvg_sweep_sell"}', alert.freq_once_per_bar_close)
