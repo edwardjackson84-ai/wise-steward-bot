@@ -254,10 +254,33 @@ def place_order(token, account_id, acc_num, signal_data):
         payload["routeId"] = route_id
         
     response = requests.post(order_url, json=payload, headers=headers)
+    
     if response.ok:
-        print(f"Trade successfully placed! Order ID: {response.json().get('orderId', 'Unknown')}")
+        msg = f"Trade successfully placed! Order ID: {response.json().get('orderId', 'Unknown')}"
+        print(msg)
+        ALERT_QUEUE.append({
+            "received_at": datetime.now().isoformat(),
+            "payload": {
+                "symbol": symbol,
+                "action": "API_SUCCESS",
+                "strategy": "Order Execution",
+                "signal_type": "Success",
+                "price": str(response.json())
+            }
+        })
     else:
-        print(f"Failed to place trade: {response.text}")
+        err_msg = f"Failed to place trade: {response.text}"
+        print(err_msg)
+        ALERT_QUEUE.append({
+            "received_at": datetime.now().isoformat(),
+            "payload": {
+                "symbol": symbol,
+                "action": "API_ERROR",
+                "strategy": "Order Rejection Debug",
+                "signal_type": "Tradelocker Error",
+                "price": response.text
+            }
+        })
 
 @app.route('/ping', methods=['GET'])
 def ping():
