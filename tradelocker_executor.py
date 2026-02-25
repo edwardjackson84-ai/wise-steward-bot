@@ -69,14 +69,35 @@ def authenticate():
 def write_journal_entry(signal_data):
     """Write an entry to the Journal of the Sovereign Arbitrator."""
     print("Writing to Journal of the Sovereign Arbitrator...")
-    journal_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "strategy": signal_data.get("strategy", "Unknown"),
-        "signal": signal_data.get("signal", "Unknown"),
-        "action": signal_data.get("action", "Unknown"),
-        "biblical_principle": "Exercising Diligence over Haste."
-    }
-    print(json.dumps(journal_entry, indent=2))
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    symbol = signal_data.get("symbol", "UNKNOWN")
+    action = signal_data.get("action", "Unknown")
+    
+    journal_dir = "journal"
+    if not os.path.exists(journal_dir):
+        os.makedirs(journal_dir)
+        
+    filename = os.path.join(journal_dir, f"Alert_{symbol}_{timestamp}.md")
+    
+    content = f"""# Alert: {symbol}
+    
+**Date & Time:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+**Action:** {action}
+**Technical Confluence:** {signal_data.get("strategy", "Unknown")}
+**Signal Type:** {signal_data.get("signal_type", signal_data.get("signal", "Unknown"))}
+**Price:** {signal_data.get("price", "Market")}
+**Biblical Principle:** *Exercising Diligence over Haste.*
+
+### Raw Payload
+```json
+{json.dumps(signal_data, indent=2)}
+```
+"""
+    with open(filename, "w") as f:
+        f.write(content)
+        
+    print(f"Journal successfully written to {filename}")
 
 def close_position(token, account_id, acc_num, signal_data, target_close_side):
     """Closes all open positions for the given symbol matching the side, or all positions if target is 'all'."""
