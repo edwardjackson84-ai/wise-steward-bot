@@ -114,8 +114,10 @@ new_lot_size = st.sidebar.slider(
     help="Sets the BASE_LOT_SIZE for the TradeLocker executor. Only applies to signals without a forced quantity."
 )
 
-# Load existing specific lot sizes
+# Load existing specific lot sizes and toggles
 specific_lots = {"US30": 0.0, "NAS100": 0.0, "SPX": 0.0, "EURUSD": 0.0, "GBPUSD": 0.0}
+visual_arbiter_enabled = False
+
 if os.path.exists(env_file):
     with open(env_file, "r") as f:
         for line in f:
@@ -125,6 +127,12 @@ if os.path.exists(env_file):
                     symbol = key.replace("LOT_SIZE_", "")
                     if symbol in specific_lots:
                         specific_lots[symbol] = float(val)
+                except:
+                    pass
+            elif line.startswith("ENABLE_VISUAL_ARBITER="):
+                try:
+                    val = line.strip().split("=")[1]
+                    visual_arbiter_enabled = (val.lower() == "true")
                 except:
                     pass
 
@@ -147,9 +155,21 @@ for sym in specific_lots.keys():
     if new_val != specific_lots[sym]:
         lots_changed = True
 
+# Advanced Settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("Advanced Settings")
+new_visual_arbiter = st.sidebar.toggle(
+    "Enable Visual Arbiter (Screenshot Validation)",
+    value=visual_arbiter_enabled,
+    help="When enabled, the bot will take a screenshot of TradingView and use vision models to validate the setup before trading."
+)
+
 # Update .env file if changed
-if new_lot_size != current_lot_size or lots_changed:
-    env_vars = {"BASE_LOT_SIZE": str(new_lot_size)}
+if new_lot_size != current_lot_size or lots_changed or new_visual_arbiter != visual_arbiter_enabled:
+    env_vars = {
+        "BASE_LOT_SIZE": str(new_lot_size),
+        "ENABLE_VISUAL_ARBITER": "true" if new_visual_arbiter else "false"
+    }
     for sym, val in new_specific_lots.items():
         env_vars[f"LOT_SIZE_{sym}"] = str(val)
         
