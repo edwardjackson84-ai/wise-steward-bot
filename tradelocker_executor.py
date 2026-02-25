@@ -249,11 +249,21 @@ def handle_webhook():
         return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 403
         
     try:
-        data = request.json
+        raw_data = request.get_data(as_text=True)
+        print(f"Raw webhook body: {raw_data}")
+        
+        try:
+            data = request.get_json(force=True)
+        except Exception:
+            if raw_data:
+                data = json.loads(raw_data)
+            else:
+                data = None
+                
         if not data:
             return jsonify({"error": "No JSON payload found"}), 400
             
-        print(f"Received data: {data}")
+        print(f"Parsed JSON data: {data}")
         write_journal_entry(data)
         
         # Add to queue for local agent to pick up
