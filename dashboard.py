@@ -115,7 +115,11 @@ new_lot_size = st.sidebar.slider(
 )
 
 # Load existing specific lot sizes and toggles
-specific_lots = {"US30": 0.0, "NAS100": 0.0, "SPX": 0.0, "EURUSD": 0.0, "GBPUSD": 0.0, "XAUUSD": 0.0, "XAGUSD": 0.0}
+specific_lots = {
+    "US30": 0.0, "NAS100": 0.0, "SPX": 0.0, "EURUSD": 0.0, "GBPUSD": 0.0, 
+    "XAUUSD": 0.0, "XAGUSD": 0.0, "CADJPY": 0.0, "NZDJPY": 0.0, "USDHKD": 0.0, 
+    "USDCNH": 0.0, "BRENT": 0.0, "WTI": 0.0
+}
 visual_arbiter_enabled = False
 
 if os.path.exists(env_file):

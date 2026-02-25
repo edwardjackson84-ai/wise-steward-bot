@@ -27,7 +27,13 @@ INSTRUMENT_MAP = {
     "NAS100": 17035,
     "SPX500": 17034,
     "XAGUSD": 18277,
-    "XAUUSD": 18278
+    "XAUUSD": 18278,
+    "CADJPY": 18205,
+    "NZDJPY": 18207,
+    "USDHKD": 18209,
+    "USDCNH": 18210,
+    "BRENT": 17930,
+    "WTI": 17928
 }
 
 def is_sabbath_mode_active():
