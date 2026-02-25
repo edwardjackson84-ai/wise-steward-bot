@@ -25,9 +25,12 @@ plot(sma200, color=color.gray, title="SMA 200 (Long)", linewidth=2)
 // --- ATR Calculation ---
 atrValue = ta.atr(atrLength)
 
-// --- Define "Narrow State" ---
+// --- Define "States of the Market" ---
 maDiff = math.abs(sma20 - sma200) / sma200
 isNarrow = maDiff < 0.005
+isWide = maDiff > 0.015
+wideAbove = isWide and sma20 > sma200
+wideBelow = isWide and sma20 < sma200
 
 // --- Detect Elephant Bars ---
 avgBody = ta.sma(math.abs(open - close), 20)
@@ -52,16 +55,29 @@ float longStopLoss = low[1]
 float shortStopLoss = high[1]
 
 // --- Elephant Retest 20 SMA ---
-bullElephantRetest = isElephant and (close > open) and (low <= sma20) and (close > sma20)
-bearElephantRetest = isElephant and (close < open) and (high >= sma20) and (close < sma20)
+bullElephantRetest = not isWide and isElephant and (close > open) and (low <= sma20) and (close > sma20)
+bearElephantRetest = not isWide and isElephant and (close < open) and (high >= sma20) and (close < sma20)
 if bullElephantRetest and timeframe.period == "3"
     alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(longStopLoss) + '", "tp": "' + str.tostring(close + (close - longStopLoss) * 2) + '", "signal": "elephant_buy"}', alert.freq_once_per_bar_close)
 if bearElephantRetest and timeframe.period == "3"
     alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(shortStopLoss) + '", "tp": "' + str.tostring(close - (shortStopLoss - close) * 2) + '", "signal": "elephant_sell"}', alert.freq_once_per_bar_close)
 
 // --- Entry Signals ---
-ov_longCondition = not isNewDay and not na(firstBarHigh) and ta.crossover(high, firstBarHigh) and setupValid and close > sma20
-ov_shortCondition = not isNewDay and not na(firstBarLow) and ta.crossunder(low, firstBarLow) and setupValid and close < sma20
+ov_longCondition = not isWide and not isNewDay and not na(firstBarHigh) and ta.crossover(high, firstBarHigh) and setupValid and close > sma20
+ov_shortCondition = not isWide and not isNewDay and not na(firstBarLow) and ta.crossunder(low, firstBarLow) and setupValid and close < sma20
+
+// --- Mean Reversion (Wide State) ---
+isBottomingTail = (math.min(open, close) - low) > math.abs(open - close) * 1.5 and (high - math.max(open, close)) < math.abs(open - close)
+isToppingTail = (high - math.max(open, close)) > math.abs(open - close) * 1.5 and (math.min(open, close) - low) < math.abs(open - close)
+
+meanRevLong = wideBelow and ( (isElephant and close > open) or isBottomingTail )
+meanRevShort = wideAbove and ( (isElephant and close < open) or isToppingTail )
+
+if meanRevLong and timeframe.period == "3"
+    alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(low - ta.atr(14)) + '", "tp": "' + str.tostring(sma20) + '", "signal": "mean_reversion_buy"}', alert.freq_once_per_bar_close)
+
+if meanRevShort and timeframe.period == "3"
+    alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(high + ta.atr(14)) + '", "tp": "' + str.tostring(sma20) + '", "signal": "mean_reversion_sell"}', alert.freq_once_per_bar_close)
 
 // --- ATR Trailing Stop Logic ---
 var float longTrailStop = na
@@ -104,6 +120,12 @@ if inLongPosition
         inLongPosition := false
         longTrailStop := na
 
+    // Check if market reached a wide exhaustion state
+    if isWide
+        ov_longExit := true
+        inLongPosition := false
+        longTrailStop := na
+
 // Short Position
 if ov_shortCondition
     inShortPosition := true
@@ -124,6 +146,12 @@ if inShortPosition
     // Check if 20 SMA crosses over 60 SMA (bullish momentum shift)
     if useSMACrossExit and sma20CrossOver60
         shortSMACrossExit := true
+        inShortPosition := false
+        shortTrailStop := na
+
+    // Check if market reached a wide exhaustion state
+    if isWide
+        ov_shortExit := true
         inShortPosition := false
         shortTrailStop := na
 
