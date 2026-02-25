@@ -25,7 +25,9 @@ INSTRUMENT_MAP = {
     "EURUSD": 16985,
     "GBPUSD": 16977,
     "NAS100": 17035,
-    "SPX500": 17034
+    "SPX500": 17034,
+    "XAGUSD": 18277,
+    "XAUUSD": 18278
 }
 
 def is_sabbath_mode_active():
