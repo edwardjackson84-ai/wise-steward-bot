@@ -20,20 +20,20 @@ PASSWORD = os.environ.get("TRADELOCKER_PASSWORD", "your_password")
 SERVER = os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Live")
 
 INSTRUMENT_MAP = {
-    "US30": 17028, # Mapped from Hankotrade Demo API
-    "BTCUSD": 16720,
+    "US30": 17028, 
+    "BTCUSD": 16720, # Might need to be dynamically verified later
     "EURUSD": 16985,
     "GBPUSD": 16977,
     "NAS100": 17035,
     "SPX500": 17034,
-    "XAGUSD": 18277,
-    "XAUUSD": 18278,
-    "CADJPY": 18205,
-    "NZDJPY": 18207,
-    "USDHKD": 18209,
-    "USDCNH": 18210,
-    "BRENT": 17930,
-    "WTI": 17928
+    "XAGUSD": 17048,
+    "XAUUSD": 17049,
+    "CADJPY": 16976,
+    "NZDJPY": 16978,
+    "USDHKD": 16980,
+    "USDCNH": 16981,
+    "BRENT": 16701,
+    "WTI": 16699
 }
 
 def is_sabbath_mode_active():
