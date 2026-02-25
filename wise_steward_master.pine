@@ -294,7 +294,7 @@ if barstate.isconfirmed
             [topL, botL] = f_makeBandLines(bar_index, bTop, bBot, true)
             array.push(bullTops, topL)
             array.push(bullBots, botL)
-        alert("Bullish FVG Created", alert.freq_once_per_bar_close)
+
     if isBearFVG and showBear
         bx = f_makeBox(bar_index, sTop, sBot, false)
         array.push(bearBoxes, bx)
@@ -302,7 +302,6 @@ if barstate.isconfirmed
             [topL, botL] = f_makeBandLines(bar_index, sTop, sBot, false)
             array.push(bearTops, topL)
             array.push(bearBots, botL)
-        alert("Bearish FVG Created", alert.freq_once_per_bar_close)
 
 f_updateAndCheck(_boxes, _isBull) =>
     entered = false
