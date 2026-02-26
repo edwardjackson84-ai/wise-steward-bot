@@ -6,6 +6,9 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+# Queue to hold recent alerts for the dashboard
+ALERT_QUEUE = []
+
 # -------------------------------------------------------------------
 # Wise Steward Trading Agent - TradeLocker Executor
 # -------------------------------------------------------------------
@@ -221,6 +224,23 @@ def place_order(token, account_id, acc_num, signal_data):
     else:
         print(f"Failed to place trade: {response.text}")
 
+@app.route('/ping', methods=['GET'])
+def ping():
+    """Heartbeat endpoint to keep Render alive."""
+    return jsonify({"status": "alive", "timestamp": datetime.now().isoformat()}), 200
+
+@app.route('/check-alerts', methods=['GET'])
+def check_alerts():
+    """Endpoint for the local dashboard to poll for new alerts."""
+    global ALERT_QUEUE
+    if not ALERT_QUEUE:
+        return jsonify({"alerts": []}), 200
+        
+    # Return all alerts and clear the queue
+    alerts_to_return = list(ALERT_QUEUE)
+    ALERT_QUEUE.clear()
+    return jsonify({"alerts": alerts_to_return}), 200
+
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
     print("\n--- Received Webhook Signal ---")
@@ -236,6 +256,12 @@ def handle_webhook():
             
         print(f"Received data: {data}")
         write_journal_entry(data)
+        
+        # Add to queue for local dashboard to pick up
+        ALERT_QUEUE.append({
+            "received_at": datetime.now().isoformat(),
+            "payload": data
+        })
         
         token, account_id, acc_num = authenticate()
         
