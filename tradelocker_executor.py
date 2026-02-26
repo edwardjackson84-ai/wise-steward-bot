@@ -6,34 +6,23 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# In-memory queue to store alerts for the local agent to fetch. 
-# (Note: In production, consider Redis or a database, but this works for the bridge).
-ALERT_QUEUE = []
-
 # -------------------------------------------------------------------
 # Wise Steward Trading Agent - TradeLocker Executor
 # -------------------------------------------------------------------
 
-TRADELOCKER_API_URL = os.environ.get("TRADELOCKER_API_URL", "https://api.tradelocker.com")
-EMAIL = os.environ.get("TRADELOCKER_EMAIL", "your_email")
-PASSWORD = os.environ.get("TRADELOCKER_PASSWORD", "your_password")
-SERVER = os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Live")
+TRADELOCKER_API_URL = os.environ.get("TRADELOCKER_API_URL", "https://demo.tradelocker.com/backend-api")
+EMAIL = os.environ.get("TRADELOCKER_EMAIL", "edward.jackson84@gmail.com")
+PASSWORD = os.environ.get("TRADELOCKER_PASSWORD", "v&LA2LWmN5kG")
+SERVER = os.environ.get("TRADELOCKER_SERVER", "CRUC")
+TARGET_ACCOUNT_ID = os.environ.get("TRADELOCKER_ACCOUNT_ID", "1961103")
 
 INSTRUMENT_MAP = {
-    "US30": 17028, 
-    "BTCUSD": 16720, # Might need to be dynamically verified later
+    "US30": 17028, # Mapped from Hankotrade Demo API
+    "BTCUSD": 16720,
     "EURUSD": 16985,
     "GBPUSD": 16977,
     "NAS100": 17035,
-    "SPX500": 17034,
-    "XAGUSD": 17048,
-    "XAUUSD": 17049,
-    "CADJPY": 16976,
-    "NZDJPY": 16978,
-    "USDHKD": 16980,
-    "USDCNH": 16981,
-    "BRENT": 16701,
-    "WTI": 16699
+    "SPX500": 17034
 }
 
 def is_sabbath_mode_active():
@@ -71,55 +60,41 @@ def authenticate():
     if not accounts:
         raise Exception("No TradeLocker accounts found for this user.")
         
-    first_account = accounts[0]
-    return token, first_account.get("id"), first_account.get("accNum", "1")
+    target_account = None
+    if TARGET_ACCOUNT_ID:
+        for acc in accounts:
+            if str(acc.get("id")) == str(TARGET_ACCOUNT_ID):
+                target_account = acc
+                break
+                
+    if not target_account:
+        print(f"Target account ID {TARGET_ACCOUNT_ID} not found. Defaulting to first account.")
+        target_account = accounts[0]
+        
+    print(f"Targeting Account ID: {target_account.get('id')} - Balance: {target_account.get('accountBalance')}")
+    return token, target_account.get("id"), target_account.get("accNum", "1")
 
 def write_journal_entry(signal_data):
     """Write an entry to the Journal of the Sovereign Arbitrator."""
     print("Writing to Journal of the Sovereign Arbitrator...")
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    symbol = signal_data.get("symbol", "UNKNOWN")
-    action = signal_data.get("action", "Unknown")
-    
-    journal_dir = "journal"
-    if not os.path.exists(journal_dir):
-        os.makedirs(journal_dir)
-        
-    filename = os.path.join(journal_dir, f"Alert_{symbol}_{timestamp}.md")
-    
-    content = f"""# Alert: {symbol}
-    
-**Date & Time:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-**Action:** {action}
-**Technical Confluence:** {signal_data.get("strategy", "Unknown")}
-**Signal Type:** {signal_data.get("signal_type", signal_data.get("signal", "Unknown"))}
-**Price:** {signal_data.get("price", "Market")}
-**Biblical Principle:** *Exercising Diligence over Haste.*
-
-### Raw Payload
-```json
-{json.dumps(signal_data, indent=2)}
-```
-"""
-    with open(filename, "w") as f:
-        f.write(content)
-        
-    print(f"Journal successfully written to {filename}")
+    journal_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "strategy": signal_data.get("strategy", "Unknown"),
+        "signal": signal_data.get("signal", "Unknown"),
+        "action": signal_data.get("action", "Unknown"),
+        "biblical_principle": "Exercising Diligence over Haste."
+    }
+    print(json.dumps(journal_entry, indent=2))
 
 def close_position(token, account_id, acc_num, signal_data, target_close_side):
-    """Closes all open positions for the given symbol matching the side, or all positions if target is 'all'."""
+    """Closes all open positions for the given symbol matching the side."""
     symbol = signal_data.get("symbol")
-    instrument_id = INSTRUMENT_MAP.get(symbol) if symbol else None
-    
-    if target_close_side != "all" and not instrument_id:
+    instrument_id = INSTRUMENT_MAP.get(symbol)
+    if not instrument_id:
         print(f"Error: {symbol} is not mapped. Cannot close position.")
         return
         
-    if target_close_side == "all":
-        print("Attempting to close ALL open positions across the account...")
-    else:
-        print(f"Attempting to close {target_close_side} position(s) for {symbol}...")
+    print(f"Attempting to close {target_close_side} position(s) for {symbol}...")
     
     # Fetch open positions
     pos_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/positions"
@@ -150,27 +125,23 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
             pos_instrument_id = pos[1]
             pos_side = pos[3].lower()
             
-            symbol_match = target_close_side == "all" or (str(pos_instrument_id) == str(instrument_id))
-            target_tl_side = "buy" if target_close_side in ["long", "buy"] else "sell"
-            side_match = target_close_side == "all" or (pos_side == target_tl_side)
-            
-            if symbol_match and side_match:
-                # Issue Global DELETE request to close the position
-                # Hankotrade's wrapper uses /trade/positions/{id} instead of /trade/accounts/
-                close_url = f"{TRADELOCKER_API_URL}/trade/positions/{pos_id}"
-                del_resp = requests.delete(close_url, headers=headers)
+            if str(pos_instrument_id) == str(instrument_id):
+                target_side_tl = "buy" if target_close_side in ["long", "buy"] else "sell"
                 
-                if del_resp.ok:
-                    print(f"Successfully closed position ID: {pos_id}")
-                    positions_closed += 1
-                else:
-                    print(f"Failed to close position ID {pos_id}: {del_resp.text}")
+                if pos_side == target_side_tl:
+                    # Issue Global DELETE request to close the position
+                    # Hankotrade's wrapper uses /trade/positions/{id} instead of /trade/accounts/
+                    close_url = f"{TRADELOCKER_API_URL}/trade/positions/{pos_id}"
+                    del_resp = requests.delete(close_url, headers=headers)
+                    
+                    if del_resp.ok:
+                        print(f"Successfully closed {target_close_side} position ID: {pos_id}")
+                        positions_closed += 1
+                    else:
+                        print(f"Failed to close position ID {pos_id}: {del_resp.text}")
                     
     if positions_closed == 0:
-        if target_close_side == "all":
-            print("No open positions found to close.")
-        else:
-            print(f"No open {target_close_side} positions found for {symbol} to close.")
+        print(f"No open {target_close_side} positions found for {symbol} to close.")
 
 def place_order(token, account_id, acc_num, signal_data):
     """Place a market entry order on TradeLocker based on the webhook signal."""
@@ -211,15 +182,7 @@ def place_order(token, account_id, acc_num, signal_data):
     order_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/orders"
     
     # Parse generic defaults or Oliver Velez specific fields
-    # Use environment variable for base lot size, defaulting to 0.01 if not set
-    base_lot_size = float(os.environ.get("BASE_LOT_SIZE", 0.01))
-    
-    # Check for symbol-specific lot size override
-    specific_lot = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
-    if specific_lot > 0.0:
-        base_lot_size = specific_lot
-        
-    quantity = signal_data.get("contracts", signal_data.get("qty", base_lot_size))
+    quantity = signal_data.get("contracts", signal_data.get("qty", 1.0))
     sl = signal_data.get("sl", signal_data.get("initial_stop"))
     tp = signal_data.get("tp")
     
@@ -239,65 +202,18 @@ def place_order(token, account_id, acc_num, signal_data):
         "qty": float(quantity),
         "side": tl_side,
         "type": "market",
-        "validity": "IOC"  # Required immediate-or-cancel for market
+        "validity": "IOC",  # Required immediate-or-cancel for market
+        "stopLoss": sl_float,
+        "takeProfit": tp_float
     }
-    
-    if sl_float:
-        payload["stopLoss"] = sl_float
-        payload["stopLossType"] = "absolute"
-        
-    if tp_float:
-        payload["takeProfit"] = tp_float
-        payload["takeProfitType"] = "absolute"
-        
     if route_id:
         payload["routeId"] = route_id
         
     response = requests.post(order_url, json=payload, headers=headers)
-    
     if response.ok:
-        msg = f"Trade successfully placed! Order ID: {response.json().get('orderId', 'Unknown')}"
-        print(msg)
-        ALERT_QUEUE.append({
-            "received_at": datetime.now().isoformat(),
-            "payload": {
-                "symbol": symbol,
-                "action": "API_SUCCESS",
-                "strategy": "Order Execution",
-                "signal_type": "Success",
-                "price": str(response.json())
-            }
-        })
+        print(f"Trade successfully placed! Order ID: {response.json().get('orderId', 'Unknown')}")
     else:
-        err_msg = f"Failed to place trade: {response.text}"
-        print(err_msg)
-        ALERT_QUEUE.append({
-            "received_at": datetime.now().isoformat(),
-            "payload": {
-                "symbol": symbol,
-                "action": "API_ERROR",
-                "strategy": "Order Rejection Debug",
-                "signal_type": "Tradelocker Error",
-                "price": response.text
-            }
-        })
-
-@app.route('/ping', methods=['GET'])
-def ping():
-    """Heartbeat endpoint to keep Render alive."""
-    return jsonify({"status": "alive", "timestamp": datetime.now().isoformat()}), 200
-
-@app.route('/check-alerts', methods=['GET'])
-def check_alerts():
-    """Endpoint for the local agent to poll for new alerts."""
-    global ALERT_QUEUE
-    if not ALERT_QUEUE:
-        return jsonify({"alerts": []}), 200
-        
-    # Return all alerts and clear the queue
-    alerts_to_return = list(ALERT_QUEUE)
-    ALERT_QUEUE.clear()
-    return jsonify({"alerts": alerts_to_return}), 200
+        print(f"Failed to place trade: {response.text}")
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
@@ -308,56 +224,25 @@ def handle_webhook():
         return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 403
         
     try:
-        raw_data = request.get_data(as_text=True)
-        print(f"Raw webhook body: {raw_data}")
-        
-        try:
-            data = request.get_json(force=True)
-        except Exception:
-            if raw_data:
-                data = json.loads(raw_data)
-            else:
-                data = None
-                
+        data = request.json
         if not data:
             return jsonify({"error": "No JSON payload found"}), 400
             
-        print(f"Parsed JSON data: {data}")
+        print(f"Received data: {data}")
         write_journal_entry(data)
-        
-        # Add to queue for local agent to pick up
-        ALERT_QUEUE.append({
-            "received_at": datetime.now().isoformat(),
-            "payload": data
-        })
         
         token, account_id, acc_num = authenticate()
         
         # Action logic decoding
         action = data.get("action", "").lower()
         
-        if action == "signal":
-            print(f"Signal received and logged: {data.get('signal')}")
-            
-        elif action == "close_all":
-            close_position(token, account_id, acc_num, data, "all")
-            
-        elif action == "close":
-            target_side = data.get("side", "").lower()
-            if target_side in ["long", "buy", "short", "sell"]:
-                close_position(token, account_id, acc_num, data, target_side)
-            else:
-                print(f"Warning: Close action received without valid side: {data}")
-                
-        elif action in ["close_long", "close_short"]:
+        # Check if this is an exit order (e.g., "close_long", "close_short")
+        if action in ["close_long", "close_short"]:
             target_side = "long" if action == "close_long" else "short"
             close_position(token, account_id, acc_num, data, target_side)
             
-        elif action in ["buy", "sell", "entry"]:
-            place_order(token, account_id, acc_num, data)
-            
+        # Check if it's an entry order (e.g., "buy", "sell", "entry")
         else:
-            print(f"Warning: Unknown action '{action}'. Defaulting to place_order just in case.")
             place_order(token, account_id, acc_num, data)
             
         return jsonify({"status": "success", "message": "Trade processed"}), 200
