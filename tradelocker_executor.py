@@ -202,10 +202,16 @@ def place_order(token, account_id, acc_num, signal_data):
         "qty": float(quantity),
         "side": tl_side,
         "type": "market",
-        "validity": "IOC",  # Required immediate-or-cancel for market
-        "stopLoss": sl_float,
-        "takeProfit": tp_float
+        "validity": "IOC"  # Required immediate-or-cancel for market
     }
+    
+    if sl_float:
+        payload["stopLoss"] = sl_float
+        payload["stopLossType"] = "absolute"
+        
+    if tp_float:
+        payload["takeProfit"] = tp_float
+        payload["takeProfitType"] = "absolute"
     if route_id:
         payload["routeId"] = route_id
         
