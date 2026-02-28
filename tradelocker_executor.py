@@ -21,7 +21,7 @@ TARGET_ACCOUNT_ID = os.environ.get("TRADELOCKER_ACCOUNT_ID", "1961103")
 
 INSTRUMENT_MAP = {
     "US30": 17028, # Mapped from Hankotrade Demo API
-    "BTCUSD": 16720,
+    "BTCUSD": 17949,
     "EURUSD": 16985,
     "GBPUSD": 16977,
     "NAS100": 17035,
@@ -88,6 +88,29 @@ def write_journal_entry(signal_data):
         "biblical_principle": "Exercising Diligence over Haste."
     }
     print(json.dumps(journal_entry, indent=2))
+
+def map_order_to_strategy(order_id, strategy, symbol):
+    """Map a TradeLocker order ID to the Pine Script strategy that generated it."""
+    if not order_id or not strategy: return
+    journal_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "journal")
+    os.makedirs(journal_dir, exist_ok=True)
+    map_file = os.path.join(journal_dir, "order_strategy_map.json")
+    
+    mapping = {}
+    if os.path.exists(map_file):
+        try:
+            with open(map_file, "r") as f:
+                mapping = json.load(f)
+        except: pass
+        
+    mapping[str(order_id)] = {
+        "strategy": strategy,
+        "symbol": symbol,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    with open(map_file, "w") as f:
+        json.dump(mapping, f, indent=2)
 
 def close_position(token, account_id, acc_num, signal_data, target_close_side):
     """Closes all open positions for the given symbol matching the side."""
@@ -220,7 +243,12 @@ def place_order(token, account_id, acc_num, signal_data):
         
     response = requests.post(order_url, json=payload, headers=headers)
     if response.ok:
-        print(f"Trade successfully placed! Order ID: {response.json().get('orderId', 'Unknown')}")
+        order_id = response.json().get('orderId', 'Unknown')
+        print(f"Trade successfully placed! Order ID: {order_id}")
+        
+        # Link order ID to strategy for Performance Tracking Dashboard
+        strategy = signal_data.get("strategy", "Unknown Strategy")
+        map_order_to_strategy(order_id, strategy, symbol)
     else:
         print(f"Failed to place trade: {response.text}")
 
@@ -247,7 +275,7 @@ def handle_webhook():
     
     if is_sabbath_mode_active():
         print("Rejecting trade signal: Sabbath Mode Active")
-        return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 403
+        return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
         
     try:
         data = request.json
@@ -285,4 +313,4 @@ def handle_webhook():
 
 if __name__ == '__main__':
     print("Wise Steward Executor standing by for webhook payloads on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)

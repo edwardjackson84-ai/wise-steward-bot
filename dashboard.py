@@ -3,12 +3,20 @@ import os
 import json
 import glob
 from datetime import datetime
+from dotenv import load_dotenv
 
 # Configure Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ALERTS_DIR = os.path.join(BASE_DIR, "pending_alerts")
 JOURNAL_DIR = os.path.join(BASE_DIR, "journal")
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+
+# Load .env from same directory as this script
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+import sys
+sys.path.append(BASE_DIR)
+from fetch_performance import get_strategy_performance
 
 # Ensure directories exist
 for directory in [ALERTS_DIR, JOURNAL_DIR, REPORTS_DIR]:
@@ -117,8 +125,8 @@ new_lot_size = st.sidebar.slider(
 # Load existing specific lot sizes and toggles
 specific_lots = {
     "US30": 0.0, "NAS100": 0.0, "SPX": 0.0, "EURUSD": 0.0, "GBPUSD": 0.0, 
-    "XAUUSD": 0.0, "XAGUSD": 0.0, "CADJPY": 0.0, "NZDJPY": 0.0, "USDHKD": 0.0, 
-    "USDCNH": 0.0, "BRENT": 0.0, "WTI": 0.0
+    "BTCUSD": 0.0, "XAUUSD": 0.0, "XAGUSD": 0.0, "CADJPY": 0.0, "NZDJPY": 0.0, 
+    "USDHKD": 0.0, "USDCNH": 0.0, "BRENT": 0.0, "WTI": 0.0
 }
 visual_arbiter_enabled = False
 
@@ -228,20 +236,139 @@ def load_md_files(directory):
             data.append({"filename": os.path.basename(f), "content": content})
     return data
 
+import requests
+import pandas as pd
+from datetime import datetime
+
+def get_auth_token():
+    # Read env vars INSIDE the function so they are read AFTER load_dotenv() runs
+    api_url  = os.environ.get("TRADELOCKER_API_URL", "https://demo.tradelocker.com/backend-api")
+    email    = os.environ.get("TRADELOCKER_EMAIL")
+    password = os.environ.get("TRADELOCKER_PASSWORD")
+    server   = os.environ.get("TRADELOCKER_SERVER")
+    if not email or not password or not server:
+        return None, None
+    try:
+        url = f"{api_url}/auth/jwt/token"
+        resp = requests.post(url, json={"email": email, "password": password, "server": server},
+                             headers={"accept": "application/json", "Content-Type": "application/json"}, timeout=8)
+        if resp.ok:
+            return resp.json().get("accessToken"), api_url
+    except:
+        pass
+    return None, None
+
+def fetch_account_metrics():
+    target_id = os.environ.get("TRADELOCKER_ACCOUNT_ID", "1961103")
+    token, api_url = get_auth_token()
+    if not token:
+        return None
+    try:
+        # Use the all-accounts endpoint (confirmed working)
+        url = f"{api_url}/auth/jwt/all-accounts"
+        headers = {"accept": "application/json", "Authorization": f"Bearer {token}"}
+        resp = requests.get(url, headers=headers, timeout=8)
+        if resp.ok:
+            accounts = resp.json().get("accounts", [])
+            for acct in accounts:
+                if str(acct.get("id")) == str(target_id):
+                    balance = float(acct.get("accountBalance", 0))
+                    # The name string usually looks like "CRUC#1234#1#1" where CRUC is the broker server
+                    raw_name = acct.get("name", "Unknown")
+                    server_name = raw_name.split("#")[0] if "#" in raw_name else raw_name
+                    
+                    return {
+                        "balance": balance, 
+                        "equity": balance,
+                        "server": server_name,
+                        "account_id": target_id
+                    }
+    except:
+        pass
+    return None
+
+# Initialize Session State for Equity Curve
+if "equity_history" not in st.session_state:
+    st.session_state["equity_history"] = pd.DataFrame(columns=["Time", "Balance", "Equity"])
+    st.session_state["equity_history"].set_index("Time", inplace=True)
+
+def fetch_render_alerts():
+    """Fetch stored alerts from the live Render webhook server."""
+    render_url = "https://wise-steward-bot.onrender.com/check-alerts"
+    try:
+        response = requests.get(render_url, timeout=5)
+        if response.ok:
+            data = response.json()
+            return data.get("alerts", [])
+    except Exception as e:
+        st.error(f"Failed to connect to Render webhook: {e}")
+    return []
+
 if page == "Live Sentry Monitor":
     st.header("📡 Live Sentry Monitor")
-    
-    alerts = load_json_files(ALERTS_DIR)
-    
-    st.metric(label="Pending Alerts Queue", value=len(alerts))
+
+    # Metrics + Chart Logic
+    metrics = fetch_account_metrics()
+    if metrics:
+        now_str = datetime.now().strftime("%H:%M:%S")
+        new_row = pd.DataFrame({"Balance": [metrics["balance"]], "Equity": [metrics["equity"]]}, index=[now_str])
+        
+        # Avoid duplicate consecutive timestamps (to prevent spam on UI refresh)
+        if st.session_state["equity_history"].empty or st.session_state["equity_history"].index[-1] != now_str:
+            st.session_state["equity_history"] = pd.concat([st.session_state["equity_history"], new_row])
+            # Keep only the last 50 data points to avoid memory bloat
+            if len(st.session_state["equity_history"]) > 50:
+                st.session_state["equity_history"] = st.session_state["equity_history"].tail(50)
+                
+        # Display Metric Cards
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Live Balance", f"${metrics['balance']:,.2f}")
+        col2.metric("Live Equity", f"${metrics['equity']:,.2f}")
+        col3.metric("Broker Context", f"{metrics['server']} ({metrics['account_id']})")
+        
+        st.markdown("---")
+        
+        with st.expander("📊 Strategy Performance Breakdown", expanded=True):
+            stats_data = get_strategy_performance()
+            if stats_data:
+                df_stats = pd.DataFrame(stats_data)
+                # Format currency columns for Streamlit display
+                st.dataframe(
+                    df_stats.style.format({
+                        "Total PnL ($)": "${:,.2f}",
+                        "Win Rate (%)": "{:.1f}%"
+                    }).bar(subset=["Total PnL ($)"], color=['#d65f5f', '#5fba7d'], align='mid'),
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.info("No closed trades match your strategy webhooks yet.")
+                
+        # Display Area/Line Chart of performance over time
+        st.markdown("### 📈 Live Equity Curve")
+        if not st.session_state["equity_history"].empty:
+            st.line_chart(st.session_state["equity_history"], color=["#cbd5e1", "#8b5cf6"])
+    else:
+        st.warning("⚠️ TradeLocker credentials missing or API unreachable. Unable to fetch equity curve.")
+
     st.markdown("---")
     
-    if not alerts:
-        st.info("No pending alerts from TradingView at the moment.")
+    # We poll directly from the Render `/check-alerts` cache
+    alerts_data = fetch_render_alerts()
+    
+    st.markdown("### 📥 Recent Webhook Payloads")
+    
+    if not alerts_data:
+        st.info("No recent alerts found on the Render server.")
     else:
-        for alert in alerts:
-            with st.expander(f"Alert: {alert['symbol']} | Action: {alert['action']} | {alert['timestamp']}"):
-                st.json(alert['raw'])
+        for idx, alert in enumerate(reversed(alerts_data)):
+            payload = alert.get("payload", {})
+            symbol = payload.get("symbol", "Unknown")
+            action = payload.get("action", "Unknown")
+            timestamp = alert.get("received_at", "Unknown")
+            
+            with st.expander(f"Alert {len(alerts_data)-idx}: {symbol} | Action: {action} | {timestamp}"):
+                st.json(payload)
 
 elif page == "Visual Journal":
     st.header("📸 Visual Verification Journal")
