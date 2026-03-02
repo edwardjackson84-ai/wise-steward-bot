@@ -1,8 +1,13 @@
-    import os
+import os
 import json
 from datetime import datetime
 import requests
 from flask import Flask, request, jsonify
+from dotenv import load_dotenv
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(script_dir, ".env")
+load_dotenv(env_path)
 
 app = Flask(__name__)
 
@@ -13,11 +18,14 @@ ALERT_QUEUE = []
 # Wise Steward Trading Agent - TradeLocker Executor
 # -------------------------------------------------------------------
 
-TRADELOCKER_API_URL = os.environ.get("TRADELOCKER_API_URL", "https://demo.tradelocker.com/backend-api")
-EMAIL = os.environ.get("TRADELOCKER_EMAIL", "edward.jackson84@gmail.com")
-PASSWORD = os.environ.get("TRADELOCKER_PASSWORD", "v&LA2LWmN5kG")
-SERVER = os.environ.get("TRADELOCKER_SERVER", "CRUC")
-TARGET_ACCOUNT_ID = os.environ.get("TRADELOCKER_ACCOUNT_ID", "1961103")
+def get_config():
+    return {
+        "API_URL": os.environ.get("TRADELOCKER_API_URL", "https://demo.tradelocker.com/backend-api"),
+        "EMAIL": os.environ.get("TRADELOCKER_EMAIL", "edward.jackson84@gmail.com"),
+        "PASSWORD": os.environ.get("TRADELOCKER_PASSWORD", "v&LA2LWmN5kG"),
+        "SERVER": os.environ.get("TRADELOCKER_SERVER", "CRUC"),
+        "ACCOUNT_ID": os.environ.get("TRADELOCKER_ACCOUNT_ID", "1961103")
+    }
 
 INSTRUMENT_MAP = {
     "US30": 17028, # Mapped from Hankotrade Demo API
@@ -41,9 +49,10 @@ def is_sabbath_mode_active():
 
 def authenticate():
     """Authenticate with TradeLocker API and return JWT, account ID, and accNum."""
+    config = get_config()
     print("Authenticating with TradeLocker...")
-    auth_url = f"{TRADELOCKER_API_URL}/auth/jwt/token"
-    payload = {"email": EMAIL, "password": PASSWORD, "server": SERVER}
+    auth_url = f"{config['API_URL']}/auth/jwt/token"
+    payload = {"email": config['EMAIL'], "password": config['PASSWORD'], "server": config['SERVER']}
     headers = {"Content-Type": "application/json"}
     
     auth_response = requests.post(auth_url, json=payload, headers=headers)
@@ -52,7 +61,7 @@ def authenticate():
         
     token = auth_response.json().get("accessToken")
     
-    accounts_url = f"{TRADELOCKER_API_URL}/auth/jwt/all-accounts"
+    accounts_url = f"{config['API_URL']}/auth/jwt/all-accounts"
     acc_headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     acc_response = requests.get(accounts_url, headers=acc_headers)
     
@@ -64,14 +73,14 @@ def authenticate():
         raise Exception("No TradeLocker accounts found for this user.")
         
     target_account = None
-    if TARGET_ACCOUNT_ID:
+    if config['ACCOUNT_ID']:
         for acc in accounts:
-            if str(acc.get("id")) == str(TARGET_ACCOUNT_ID):
+            if str(acc.get("id")) == str(config['ACCOUNT_ID']):
                 target_account = acc
                 break
                 
     if not target_account:
-        print(f"Target account ID {TARGET_ACCOUNT_ID} not found. Defaulting to first account.")
+        print(f"Target account ID {config['ACCOUNT_ID']} not found. Defaulting to first account.")
         target_account = accounts[0]
         
     print(f"Targeting Account ID: {target_account.get('id')} - Balance: {target_account.get('accountBalance')}")
@@ -88,6 +97,39 @@ def write_journal_entry(signal_data):
         "biblical_principle": "Exercising Diligence over Haste."
     }
     print(json.dumps(journal_entry, indent=2))
+
+def create_visual_journal_entry(signal_data, img_path, vision_result):
+    """Compiles the trade setup and AI review into a Markdown file for the dashboard."""
+    journal_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "journal")
+    os.makedirs(journal_dir, exist_ok=True)
+    
+    symbol = signal_data.get("symbol", "Unknown")
+    strategy = signal_data.get("strategy", "Unknown")
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    filename = os.path.join(journal_dir, f"{symbol}_{timestamp_str}.md")
+    
+    status_icon = "✅" if vision_result.get("approved") else "❌"
+    
+    md_content = f"""### {symbol} - {strategy}
+**Action:** {signal_data.get('action')} | **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+**Visual Arbiter Status:** {status_icon} {'PASSED' if vision_result.get('approved') else 'REJECTED'}
+**AI Reasoning:**
+> {vision_result.get('reason')}
+
+**Webhook Payload:**
+```json
+{json.dumps(signal_data, indent=2)}
+```
+"""
+    # Embed image if we have it
+    if img_path and os.path.exists(img_path):
+        # We need relative path or absolute for streamlit
+        md_content += f"\n**Screenshot Analysis:**\n![Chart Snapshot]({img_path})\n"
+
+    with open(filename, "w") as f:
+        f.write(md_content)
 
 def map_order_to_strategy(order_id, strategy, symbol):
     """Map a TradeLocker order ID to the Pine Script strategy that generated it."""
@@ -114,6 +156,7 @@ def map_order_to_strategy(order_id, strategy, symbol):
 
 def close_position(token, account_id, acc_num, signal_data, target_close_side):
     """Closes all open positions for the given symbol matching the side."""
+    config = get_config()
     symbol = signal_data.get("symbol")
     instrument_id = INSTRUMENT_MAP.get(symbol)
     if not instrument_id:
@@ -123,7 +166,7 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
     print(f"Attempting to close {target_close_side} position(s) for {symbol}...")
     
     # Fetch open positions
-    pos_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/positions"
+    pos_url = f"{config['API_URL']}/trade/accounts/{account_id}/positions"
     headers = {"Authorization": f"Bearer {token}", "accNum": str(acc_num)}
     resp = requests.get(pos_url, headers=headers)
     
@@ -157,7 +200,7 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
                 if pos_side == target_side_tl:
                     # Issue Global DELETE request to close the position
                     # Hankotrade's wrapper uses /trade/positions/{id} instead of /trade/accounts/
-                    close_url = f"{TRADELOCKER_API_URL}/trade/positions/{pos_id}"
+                    close_url = f"{config['API_URL']}/trade/positions/{pos_id}"
                     del_resp = requests.delete(close_url, headers=headers)
                     
                     if del_resp.ok:
@@ -186,8 +229,9 @@ def place_order(token, account_id, acc_num, signal_data):
         
     print(f"Placing {tl_side} order for {symbol} (Instrument ID: {instrument_id})...")
     
+    config = get_config()
     # Fetch dynamic routeId (Required for Hankotrade indices/crypto)
-    instruments_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/instruments"
+    instruments_url = f"{config['API_URL']}/trade/accounts/{account_id}/instruments"
     headers = {"Authorization": f"Bearer {token}", "accNum": str(acc_num), "Content-Type": "application/json"}
     inst_resp = requests.get(instruments_url, headers=headers)
     
@@ -205,7 +249,7 @@ def place_order(token, account_id, acc_num, signal_data):
                         route_id = r.get("id")
                         break
                         
-    order_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/orders"
+    order_url = f"{config['API_URL']}/trade/accounts/{account_id}/orders"
     
     # Parse generic defaults or Oliver Velez specific fields
     quantity = signal_data.get("contracts", signal_data.get("qty", 0.01))
@@ -273,18 +317,21 @@ def check_alerts():
 def handle_webhook():
     print("\n--- Received Webhook Signal ---")
     
-    if is_sabbath_mode_active():
+    # Force parse JSON regardless of Content-Type 
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        try:
+            data = json.loads(request.data)
+        except Exception:
+            return jsonify({"error": "No JSON payload found"}), 400
+        
+    # Check Sabbath Mode (unless bypass flag is fully authorized)
+    bypass_sabbath = data.get("bypass_sabbath", False)
+    if is_sabbath_mode_active() and not bypass_sabbath:
         print("Rejecting trade signal: Sabbath Mode Active")
         return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
         
-            try:
-        # Force parse JSON regardless of fContent-Type header (TradingView sends text/plain)
-        data = request.get_json(force=True, silent=True)
-        if not data:
-            try:
-                data = json.loads(request.data)
-            except Exception:
-                return jsonify({"error": "No JSON payload found"}), 400
+    try:
         print(f"Received data: {data}")
         write_journal_entry(data)
         
@@ -306,6 +353,40 @@ def handle_webhook():
             
         # Check if it's an entry order (e.g., "buy", "sell", "entry")
         else:
+            # === VISUAL ARBITER PIPELINE ===
+            enable_vision = str(os.environ.get("ENABLE_VISUAL_ARBITER", "false")).lower() == "true"
+            if enable_vision:
+                symbol = data.get("symbol", "UNKNOWN")
+                timeframe = str(data.get("timeframe", "60"))
+                strategy = data.get("strategy", "Unknown Strategy")
+                
+                print(f"Visual Arbiter enabled. Triggering screenshot for {symbol}...")
+                try:
+                    from screenshot_engine import capture_chart_screenshot
+                    from vision_arbiter import analyze_chart_with_vision
+                    
+                    img_path = capture_chart_screenshot(symbol, timeframe)
+                    if img_path:
+                        vision_result = analyze_chart_with_vision(img_path, symbol, strategy)
+                        
+                        # Document the Arbiter's reasoning
+                        data["arbiter_approved"] = vision_result.get("approved", True)
+                        data["arbiter_reason"] = vision_result.get("reason", "No reason provided.")
+                        
+                        # Generate the Markdown journal piece
+                        create_visual_journal_entry(data, img_path, vision_result)
+                        
+                        if not vision_result.get("approved"):
+                            print(f"❌ Visual Arbiter REJECTED trade: {data['arbiter_reason']}")
+                            return jsonify({"status": "rejected_by_arbiter", "reason": data['arbiter_reason']}), 200
+                        else:
+                            print(f"✅ Visual Arbiter APPROVED trade: {data['arbiter_reason']}")
+                    else:
+                        print("Failed to capture screenshot. Bypassing Arbiter and executing blindly.")
+                except Exception as e:
+                    print(f"Visual Arbiter Exception: {e}. Executing blindly.")
+            # ===============================
+
             place_order(token, account_id, acc_num, data)
             
         return jsonify({"status": "success", "message": "Trade processed"}), 200
