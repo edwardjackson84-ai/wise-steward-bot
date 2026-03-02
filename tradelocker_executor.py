@@ -277,14 +277,14 @@ def handle_webhook():
         print("Rejecting trade signal: Sabbath Mode Active")
         return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
         
-    try:
+            try:
         # Force parse JSON regardless of fContent-Type header (TradingView sends text/plain)
         data = request.get_json(force=True, silent=True)
         if not data:
-                           try:
-                                                                data = json.loads(request.data)
-                            except Exception:
-                                                return jsonify({"error": "No JSON payload found"}), 400
+            try:
+                data = json.loads(request.data)
+            except Exception:
+                return jsonify({"error": "No JSON payload found"}), 400
         print(f"Received data: {data}")
         write_journal_entry(data)
         
