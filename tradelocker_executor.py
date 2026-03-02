@@ -33,7 +33,8 @@ INSTRUMENT_MAP = {
     "EURUSD": 16985,
     "GBPUSD": 16977,
     "NAS100": 17035,
-    "SPX500": 17034
+    "SPX500": 17034,
+    "US500": 17034  # Alias for SPX500
 }
 
 def is_sabbath_mode_active():
