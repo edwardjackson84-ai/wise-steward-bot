@@ -91,10 +91,13 @@ def place_market_order(session_token, symbol, side, qty, sl_price, tp_price):
     # Direction mappings
     direction = "buy" if side.lower() == "buy" else "sell"
     
+    # Forex.com expects quantity in raw units, not decimal lots. 1 standard lot = 100,000 units.
+    units_qty = int(qty * 100000)
+    
     payload = {
         "MarketId": market_id,
         "Direction": direction,
-        "Quantity": qty,
+        "Quantity": units_qty,
         "BidPrice": 0, # Ignored for market orders
         "OfferPrice": 0,
         "AuditId": "", # Requires active price quote polling in production
@@ -103,7 +106,7 @@ def place_market_order(session_token, symbol, side, qty, sl_price, tp_price):
     }
     
     # Forex.com REST order payload is complex, printing the attempt for logs
-    print(f"Attempting to route {side} order for {qty} {symbol} to Forex.com...")
+    print(f"Attempting to route {side} order for {units_qty} units ({qty} lots) of {symbol} to Forex.com...")
     print(f"Market ID: {market_id}")
     
     # Try execution
