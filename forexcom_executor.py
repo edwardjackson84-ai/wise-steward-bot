@@ -65,11 +65,12 @@ def is_session_active(symbol):
 
 def get_market_id(session_token, symbol):
     """Maps typical forex symbols (EURUSD) to Forex.com internal MarketIds."""
-    # Basic mapping for testing. In reality, you'd query /market/informationsearch
+    # US regulations (CFTC/NFA) restrict Forex.com from offering CFDs (US30, NAS100, Crypto) 
+    # to US residents. These must be traded on offshore brokers like HankoTrade.
     symbol_map = {
-        "EURUSD": 400481142, # Standard EUR/USD
-        "US30": 400481146, # Wall Street
-        "BTCUSD": 400481155 # Bitcoin
+        "EURUSD": 401876081, # Demo EUR/USD
+        # "US30": N/A, 
+        # "BTCUSD": N/A
     }
     return symbol_map.get(symbol.upper())
 
