@@ -41,7 +41,18 @@ def authenticate():
     
     data = resp.json()
     session_token = data.get("Session")
-    return session_token
+    
+    # Fetch explicit TradingAccountId (Forex.com rejects ID 0 for US NFA accounts)
+    headers = {"UserName": config['USERNAME'], "Session": session_token}
+    acc_resp = requests.get(f"{config['API_URL']}/useraccount/ClientAndTradingAccount", headers=headers)
+    trading_account_id = 0
+    if acc_resp.ok:
+        acc_data = acc_resp.json()
+        accounts = acc_data.get("TradingAccounts", [])
+        if accounts:
+            trading_account_id = accounts[0].get("TradingAccountId", 0)
+            
+    return session_token, trading_account_id
 
 def is_session_active(symbol):
     """Checks string constraints against current time for allowed trading sessions."""
@@ -69,12 +80,13 @@ def get_market_id(session_token, symbol):
     # to US residents. These must be traded on offshore brokers like HankoTrade.
     symbol_map = {
         "EURUSD": 401876081, # Demo EUR/USD
+        "GBPUSD": 401876082, # Demo GBP/USD
         # "US30": N/A, 
         # "BTCUSD": N/A
     }
     return symbol_map.get(symbol.upper())
 
-def place_market_order(session_token, symbol, side, qty, sl_price, tp_price):
+def place_market_order(session_token, trading_account_id, symbol, side, qty, sl_price, tp_price):
     """Places a trade using Forex.com REST API."""
     config = get_config()
     market_id = get_market_id(session_token, symbol)
@@ -102,7 +114,7 @@ def place_market_order(session_token, symbol, side, qty, sl_price, tp_price):
         "BidPrice": 0, # Ignored for market orders
         "OfferPrice": 0,
         "AuditId": "", # Requires active price quote polling in production
-        "TradingAccountId": 0, # Defaults to main account if 0
+        "TradingAccountId": trading_account_id,
         "IfDone": [] # SL/TP arrays go here
     }
     
@@ -148,7 +160,7 @@ def webhook():
                 
             # 3. Execution
             try:
-                session_token = authenticate()
+                session_token, trading_account_id = authenticate()
                 
                 # Close orders are vastly different API calls than entry orders
                 if action in ["close_long", "close_short"]:
@@ -159,7 +171,7 @@ def webhook():
                     side = data.get("side", "buy")
                     sl = float(data.get("sl", 0))
                     tp = float(data.get("tp", 0))
-                    place_market_order(session_token, symbol, side, qty, sl, tp)
+                    place_market_order(session_token, trading_account_id, symbol, side, qty, sl, tp)
                     
             except Exception as e:
                 print(f"Execution Pipeline Error: {e}")
