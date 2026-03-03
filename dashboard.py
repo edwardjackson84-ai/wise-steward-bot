@@ -103,8 +103,7 @@ st.sidebar.title("Broker Selection")
 
 # Multi-broker environment toggles
 broker_options = {
-    "Crucial Markets Demo": ".env",
-    "Crucial Markets Live": ".env.cruciallive",
+    "Forex.com RAW Demo": ".env.forexcom",
     "HankoTrade Demo": ".env.hankodemo",
     "HankoTrade Live": ".env.hankolive"
 }
