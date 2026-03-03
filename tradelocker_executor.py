@@ -7,7 +7,10 @@ from dotenv import load_dotenv
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(script_dir, ".env")
-load_dotenv(env_path)
+# Only load .env if it exists locally, but do NOT override system/Render env vars
+if os.path.exists(env_path):
+    load_dotenv(env_path, override=False)
+>>>>>>> 288fee7 (Fix env var loading and add Geopolitics/Visual features)
 
 app = Flask(__name__)
 
@@ -36,6 +39,30 @@ INSTRUMENT_MAP = {
     "SPX500": 17034,
     "US500": 17034  # Alias for SPX500
 }
+
+def is_session_active(symbol):
+    """Check if the current UTC time is within the allowed sessions for the given symbol."""
+    now_utc = datetime.utcnow()
+    hour_utc = now_utc.hour
+
+    sessions_env_val = os.environ.get(f"SESSIONS_{symbol}", "Asian,London,New York")
+    if not sessions_env_val:
+        return False
+        
+    allowed_sessions = [s.strip() for s in sessions_env_val.split(",")]
+    
+    # Asian Session: 23:00 - 08:00 UTC
+    # London Session: 07:00 - 16:00 UTC
+    # New York Session: 13:00 - 22:00 UTC
+    is_asian = (hour_utc >= 23 or hour_utc < 8)
+    is_london = (7 <= hour_utc < 16)
+    is_new_york = (13 <= hour_utc < 22)
+    
+    if "Asian" in allowed_sessions and is_asian: return True
+    if "London" in allowed_sessions and is_london: return True
+    if "New York" in allowed_sessions and is_new_york: return True
+
+    return False
 
 def is_sabbath_mode_active():
     """Check if the current time is within the Sabbath blackout period."""
@@ -354,6 +381,12 @@ def handle_webhook():
             
         # Check if it's an entry order (e.g., "buy", "sell", "entry")
         else:
+            symbol = data.get("symbol", "UNKNOWN")
+            
+            # === SESSION FILTER PIPELINE ===
+            if symbol != "UNKNOWN" and not is_session_active(symbol):
+                print(f"Rejecting trade signal for {symbol}: Outside allowed trading sessions.")
+                return jsonify({"status": "rejected", "reason": f"Outside allowed trading sessions for {symbol}"}), 200
             # === VISUAL ARBITER PIPELINE ===
             enable_vision = str(os.environ.get("ENABLE_VISUAL_ARBITER", "false")).lower() == "true"
             if enable_vision:

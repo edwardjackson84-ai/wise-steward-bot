@@ -17,6 +17,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 import sys
 sys.path.append(BASE_DIR)
 from fetch_performance import get_strategy_performance
+from geopolitics_engine import fetch_world_news_rss, analyze_geopolitics
 
 # Ensure directories exist
 for directory in [ALERTS_DIR, JOURNAL_DIR, REPORTS_DIR]:
@@ -95,13 +96,31 @@ st.title("🧿 Wise Steward")
 st.markdown('<p class="subtitle">Autonomous Trading & Visual Arbiter Protocol</p>', unsafe_allow_html=True)
 
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Live Sentry Monitor", "Visual Journal", "Performance Reports"])
+page = st.sidebar.radio("Go to", ["Live Sentry Monitor", "Economic Calendar", "Global Chessboard (AI)", "Visual Journal", "Performance Reports"])
+
+st.sidebar.markdown("---")
+st.sidebar.title("Broker Selection")
+
+# Multi-broker environment toggles
+broker_options = {
+    "Crucial Markets Demo": ".env",
+    "Crucial Markets Live": ".env.cruciallive",
+    "HankoTrade Demo": ".env.hankodemo",
+    "HankoTrade Live": ".env.hankolive"
+}
+selected_broker_name = st.sidebar.selectbox("Active Account", list(broker_options.keys()))
+env_file = os.path.join(BASE_DIR, broker_options[selected_broker_name])
+
+# Dynamically reload environment variables for the selected broker
+if os.path.exists(env_file):
+    load_dotenv(env_file, override=True)
+else:
+    st.sidebar.warning(f"Configuration file {broker_options[selected_broker_name]} not found. Risk settings will not save.")
 
 st.sidebar.markdown("---")
 st.sidebar.title("Risk Management")
 
 # Load existing base lot size
-env_file = os.path.join(BASE_DIR, ".env")
 current_lot_size = 0.01
 if os.path.exists(env_file):
     with open(env_file, "r") as f:
@@ -128,6 +147,7 @@ specific_lots = {
     "BTCUSD": 0.0, "XAUUSD": 0.0, "XAGUSD": 0.0, "CADJPY": 0.0, "NZDJPY": 0.0, 
     "USDHKD": 0.0, "USDCNH": 0.0, "BRENT": 0.0, "WTI": 0.0
 }
+specific_sessions = {}
 visual_arbiter_enabled = False
 
 if os.path.exists(env_file):
@@ -141,6 +161,14 @@ if os.path.exists(env_file):
                         specific_lots[symbol] = float(val)
                 except:
                     pass
+            elif line.startswith("SESSIONS_"):
+                try:
+                    key, val = line.strip().split("=")
+                    symbol = key.replace("SESSIONS_", "")
+                    if symbol in specific_lots and val:
+                        specific_sessions[symbol] = [s.strip() for s in val.split(',')]
+                except:
+                    pass
             elif line.startswith("ENABLE_VISUAL_ARBITER="):
                 try:
                     val = line.strip().split("=")[1]
@@ -148,24 +176,39 @@ if os.path.exists(env_file):
                 except:
                     pass
 
-# Sliders for specific lot sizes
+# Instrument Customization (Lot Size & Sessions)
 st.sidebar.markdown("---")
-st.sidebar.subheader("Asset-Specific Sets (0.0 = Base)")
+st.sidebar.subheader("Asset-Specific Rules")
 new_specific_lots = {}
+new_specific_sessions = {}
 lots_changed = False
+sessions_changed = False
 
 for sym in specific_lots.keys():
-    new_val = st.sidebar.number_input(
-        f"{sym} Lot",
-        min_value=0.00,
-        max_value=50.00,
-        value=specific_lots[sym],
-        step=0.01,
-        help=f"Lot size for {sym}. Set to 0.0 to fallback to Base Lot Size."
-    )
-    new_specific_lots[sym] = new_val
-    if new_val != specific_lots[sym]:
-        lots_changed = True
+    with st.sidebar.expander(f"{sym} Settings", expanded=False):
+        new_val = st.number_input(
+            "Lot Size (0.0 = Base)",
+            min_value=0.00,
+            max_value=50.00,
+            value=specific_lots[sym],
+            step=0.01,
+            key=f"lot_{sym}",
+            help=f"Lot size for {sym}. Set to 0.0 to fallback to Base Lot Size."
+        )
+        new_specific_lots[sym] = new_val
+        if new_val != specific_lots[sym]:
+            lots_changed = True
+            
+        current_sessions = specific_sessions.get(sym, ["Asian", "London", "New York"])
+        new_sessions = st.multiselect(
+            "Allowed Sessions",
+            options=["Asian", "London", "New York"],
+            default=current_sessions,
+            key=f"session_{sym}"
+        )
+        new_specific_sessions[sym] = new_sessions
+        if set(new_sessions) != set(current_sessions):
+            sessions_changed = True
 
 # Advanced Settings
 st.sidebar.markdown("---")
@@ -177,13 +220,15 @@ new_visual_arbiter = st.sidebar.toggle(
 )
 
 # Update .env file if changed
-if new_lot_size != current_lot_size or lots_changed or new_visual_arbiter != visual_arbiter_enabled:
+if new_lot_size != current_lot_size or lots_changed or sessions_changed or new_visual_arbiter != visual_arbiter_enabled:
     env_vars = {
         "BASE_LOT_SIZE": str(new_lot_size),
         "ENABLE_VISUAL_ARBITER": "true" if new_visual_arbiter else "false"
     }
     for sym, val in new_specific_lots.items():
         env_vars[f"LOT_SIZE_{sym}"] = str(val)
+    for sym, sessions_list in new_specific_sessions.items():
+        env_vars[f"SESSIONS_{sym}"] = ",".join(sessions_list)
         
     lines = []
     if os.path.exists(env_file):
@@ -209,6 +254,8 @@ if new_lot_size != current_lot_size or lots_changed or new_visual_arbiter != vis
 os.environ["BASE_LOT_SIZE"] = str(new_lot_size)
 for k, v in new_specific_lots.items():
     os.environ[f"LOT_SIZE_{k}"] = str(v)
+for k, v in new_specific_sessions.items():
+    os.environ[f"SESSIONS_{k}"] = ",".join(v)
 
 def load_json_files(directory):
     files = glob.glob(os.path.join(directory, "*.json"))
@@ -369,6 +416,94 @@ if page == "Live Sentry Monitor":
             
             with st.expander(f"Alert {len(alerts_data)-idx}: {symbol} | Action: {action} | {timestamp}"):
                 st.json(payload)
+
+elif page == "Economic Calendar":
+    st.header("📅 Economic Calendar (This Week)")
+    st.markdown("Macro & micro economic events impacting global markets.")
+    
+    @st.cache_data(ttl=3600)
+    def fetch_ff_calendar():
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.ok:
+                return resp.json()
+        except:
+            pass
+        return []
+        
+    events = fetch_ff_calendar()
+    if not events:
+        st.warning("Failed to fetch calendar data or data is empty.")
+    else:
+        df = pd.DataFrame(events)
+        impact_filter = st.multiselect("Filter by Impact", ["High", "Medium", "Low", "Non-Economic"], default=["High", "Medium"])
+        if not df.empty and "impact" in df.columns:
+            df = df[df["impact"].isin(impact_filter)]
+            
+            try:
+                df["date_parsed"] = pd.to_datetime(df["date"])
+                df["Day"] = df["date_parsed"].dt.strftime("%A, %b %d")
+                df["Time (Est Local)"] = df["date_parsed"].dt.strftime("%I:%M %p")
+            except:
+                df["Day"] = df["date"]
+                df["Time (Est Local)"] = ""
+            
+            display_cols = ["Day", "Time (Est Local)", "country", "impact", "title", "forecast", "previous"]
+            display_cols = [c for c in display_cols if c in df.columns]
+            
+            # Helper to apply color styles via Pandas Styler map
+            def color_impact(val):
+                if val == "High": return "color: #dc2626; font-weight: bold;" # Red
+                elif val == "Medium": return "color: #ea580c; font-weight: bold;" # Orange
+                elif val == "Low": return "color: #65a30d;" # Green
+                return ""
+            
+            # Attempt to use map (or applymap for older pandas)
+            styled_df = df[display_cols].style
+            try:
+                styled_df = styled_df.map(color_impact, subset=["impact"])
+            except AttributeError:
+                try:
+                    styled_df = styled_df.applymap(color_impact, subset=["impact"])
+                except:
+                    pass
+                
+            st.dataframe(
+                styled_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+elif page == "Global Chessboard (AI)":
+    st.header("♟️ Sovereign Intelligence: Global Chessboard")
+    st.markdown("Analyzes the latest macroeconomic and geopolitical events through a Game Theory lens to anticipate market impacts.")
+    
+    # Store news text in session state so it survives re-renders when "Run Simulation" is clicked
+    if "latest_news" not in st.session_state:
+        st.session_state.latest_news = ""
+        
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("Raw Intelligence Feed")
+        if st.button("📡 Fetch Recent News (BBC World)"):
+            with st.spinner("Intercepting global headlines..."):
+                st.session_state.latest_news = fetch_world_news_rss(limit=25)
+                
+        if st.session_state.latest_news:
+            st.markdown(st.session_state.latest_news)
+            
+    with col2:
+        st.subheader("Game Theory Simulation")
+        if st.button("🧠 Run Game Theory Analysis"):
+            if not st.session_state.latest_news or st.session_state.latest_news.startswith("Error"):
+                st.warning("Please fetch raw intelligence first.")
+            else:
+                with st.spinner("Sovereign AI is analyzing the board..."):
+                    api_key = os.environ.get("GEMINI_API_KEY")
+                    analysis = analyze_geopolitics(api_key, st.session_state.latest_news)
+                    st.markdown(analysis)
 
 elif page == "Visual Journal":
     st.header("📸 Visual Verification Journal")

@@ -4,7 +4,7 @@ import requests
 from datetime import datetime
 
 # Import authentication helper from executor to reuse credentials
-from tradelocker_executor import authenticate, TRADELOCKER_API_URL
+from tradelocker_executor import authenticate, get_config
 
 def get_strategy_performance():
     """
@@ -28,7 +28,8 @@ def get_strategy_performance():
                 
         # 3. Fetch Historical Trades from TradeLocker
         # Limit to last 1000 orders. Using ordersHistory as it contains the 22-column PnL array.
-        history_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/ordersHistory?limit=1000"
+        config = get_config()
+        history_url = f"{config['API_URL']}/trade/accounts/{account_id}/ordersHistory?limit=1000"
         headers = {"Authorization": f"Bearer {token}", "accNum": str(acc_num)}
         resp = requests.get(history_url, headers=headers)
         
