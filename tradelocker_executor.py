@@ -10,7 +10,6 @@ env_path = os.path.join(script_dir, ".env")
 # Only load .env if it exists locally, but do NOT override system/Render env vars
 if os.path.exists(env_path):
     load_dotenv(env_path, override=False)
->>>>>>> 288fee7 (Fix env var loading and add Geopolitics/Visual features)
 
 app = Flask(__name__)
 
