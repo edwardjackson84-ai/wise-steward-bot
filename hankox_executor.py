@@ -193,10 +193,10 @@ def toggle_account():
     
     if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.forexcom"]:
         env_path = os.path.join(script_dir, env_name)
+        val = "True" if is_active else "False"
         if not os.path.exists(env_path):
             with open(env_path, "w") as f:
-                f.write(f"ACCOUNT_ACTIVE={'True' if is_active else 'False'}
-")
+                f.write("ACCOUNT_ACTIVE=" + val + "\n")
         else:
             with open(env_path, "r") as f:
                 lines = f.readlines()
@@ -204,15 +204,13 @@ def toggle_account():
                 found = False
                 for line in lines:
                     if line.startswith("ACCOUNT_ACTIVE="):
-                        f.write(f"ACCOUNT_ACTIVE={'True' if is_active else 'False'}
-")
+                        f.write("ACCOUNT_ACTIVE=" + val + "\n")
                         found = True
                     else:
                         f.write(line)
                 if not found:
-                    f.write(f"ACCOUNT_ACTIVE={'True' if is_active else 'False'}
-")
-        return jsonify({"status": "success", "message": f"{env_name} set to {is_active}"})
+                    f.write("ACCOUNT_ACTIVE=" + val + "\n")
+        return jsonify({"status": "success", "message": env_name + " set to " + str(is_active)})
     return jsonify({"status": "error", "message": "Invalid environment file"}), 400
 
 @app.route("/webhook", methods=["POST"])
