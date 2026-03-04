@@ -99,22 +99,58 @@ st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["Live Sentry Monitor", "Economic Calendar", "Global Chessboard (AI)", "Visual Journal", "Performance Reports"])
 
 st.sidebar.markdown("---")
-st.sidebar.title("Broker Selection")
+st.sidebar.markdown("---")
+st.sidebar.title("Broker Configuration")
 
-# Multi-broker environment toggles
+# Active Focus Account (For Settings/Risk Editing)
 broker_options = {
-    "Forex.com RAW Demo": ".env.forexcom",
-    "HankoTrade Demo": ".env.hankodemo",
-    "HankoTrade Live": ".env.hankolive"
+    "Forex.com RAW": ".env.forexcom",
+    "Hanko X Demo (WS)": ".env.hankodemo",
+    "Hanko X Live (WS)": ".env.hankolive"
 }
-selected_broker_name = st.sidebar.selectbox("Active Account", list(broker_options.keys()))
+selected_broker_name = st.sidebar.selectbox("Select Account to Edit Risk", list(broker_options.keys()))
 env_file = os.path.join(BASE_DIR, broker_options[selected_broker_name])
 
-# Dynamically reload environment variables for the selected broker
+# Dynamically reload environment variables for the selected broker to edit
 if os.path.exists(env_file):
     load_dotenv(env_file, override=True)
 else:
     st.sidebar.warning(f"Configuration file {broker_options[selected_broker_name]} not found. Risk settings will not save.")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Multi-Account Signal Routing")
+st.sidebar.caption("Toggle which accounts will execute incoming webhook signals simultaneously.")
+
+for b_name, b_env in broker_options.items():
+    env_path = os.path.join(BASE_DIR, b_env)
+    is_active = False
+    
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                if line.startswith("ACCOUNT_ACTIVE="):
+                    is_active = (line.strip().split("=")[1].lower() == "true")
+                    break
+    
+    # Toggle widget
+    new_active_status = st.sidebar.toggle(f"Route to {b_name}", value=is_active, key=f"toggle_{b_name}")
+    
+    # Write back to file if changed
+    if new_active_status != is_active:
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+            
+            with open(env_path, "w") as f:
+                found_active = False
+                for line in lines:
+                    if line.startswith("ACCOUNT_ACTIVE="):
+                        f.write(f"ACCOUNT_ACTIVE={'True' if new_active_status else 'False'}\n")
+                        found_active = True
+                    else:
+                        f.write(line)
+                if not found_active:
+                    f.write(f"ACCOUNT_ACTIVE={'True' if new_active_status else 'False'}\n")
 
 st.sidebar.markdown("---")
 st.sidebar.title("Risk Management")
@@ -304,13 +340,65 @@ def get_auth_token():
         pass
     return None, None
 
+def get_hanko_token(email, password, server_type):
+    login_url = "https://tradeapi.hankotrade.com/api/login"
+    login_data = {
+        "email": email,
+        "password": password,
+        "server_type": server_type
+    }
+    headers = {
+        'User-Agent': 'Mozilla/5.0',
+        'Origin': 'https://trade.hankotrade.com',
+        'Referer': 'https://trade.hankotrade.com/'
+    }
+    try:
+        resp = requests.post(login_url, json=login_data, headers=headers, timeout=8)
+        if resp.ok and 'data' in resp.json():
+            return resp.json()['data']['user']['token']
+    except:
+        pass
+    return None
+
 def fetch_account_metrics():
+    # 1. Check if we are focusing on a Hanko X Account
+    hanko_email = os.environ.get("HANKOX_EMAIL") or os.environ.get("TRADELOCKER_EMAIL")
+    hanko_password = os.environ.get("HANKOX_PASSWORD") or os.environ.get("TRADELOCKER_PASSWORD")
+    hanko_server = os.environ.get("HANKOX_SERVER", "")
+    
+    if hanko_email and hanko_password and "Hanko" in hanko_server:
+        server_identifier = "hankotrade_live" if "Live" in hanko_server else "hankotrade_demo"
+        token = get_hanko_token(hanko_email, hanko_password, server_identifier)
+        if token:
+            try:
+                acc_url = "https://tradeapi.hankotrade.com/api/act/user/account/balance"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Origin': 'https://trade.hankotrade.com',
+                    'Referer': 'https://trade.hankotrade.com/',
+                    'Authorization': f'Bearer {token}'
+                }
+                resp = requests.post(acc_url, json={}, headers=headers, timeout=8)
+                if resp.ok:
+                    data = resp.json().get("data", {})
+                    balance = float(data.get("AMOUNT", 0))
+                    equity = float(data.get("ACCOUNT_EQUITY", balance))
+                    return {
+                        "balance": balance,
+                        "equity": equity,
+                        "server": hanko_server,
+                        "account_id": data.get("CUSTOMER_ID", "Unknown")
+                    }
+            except:
+                pass
+        return None
+        
+    # 2. Fallback to older TradeLocker logic for Crucial Markets / others
     target_id = os.environ.get("TRADELOCKER_ACCOUNT_ID", "1961103")
     token, api_url = get_auth_token()
     if not token:
         return None
     try:
-        # Use the all-accounts endpoint (confirmed working)
         url = f"{api_url}/auth/jwt/all-accounts"
         headers = {"accept": "application/json", "Authorization": f"Bearer {token}"}
         resp = requests.get(url, headers=headers, timeout=8)
@@ -319,10 +407,8 @@ def fetch_account_metrics():
             for acct in accounts:
                 if str(acct.get("id")) == str(target_id):
                     balance = float(acct.get("accountBalance", 0))
-                    # The name string usually looks like "CRUC#1234#1#1" where CRUC is the broker server
                     raw_name = acct.get("name", "Unknown")
                     server_name = raw_name.split("#")[0] if "#" in raw_name else raw_name
-                    
                     return {
                         "balance": balance, 
                         "equity": balance,
@@ -333,11 +419,14 @@ def fetch_account_metrics():
         pass
     return None
 
-# Initialize Session State for Equity Curve
-if "equity_history" not in st.session_state:
+# Initialize Session State for Equity Curve per Account
+if "current_account" not in st.session_state:
+    st.session_state["current_account"] = selected_broker_name
+
+if "equity_history" not in st.session_state or st.session_state["current_account"] != selected_broker_name:
     st.session_state["equity_history"] = pd.DataFrame(columns=["Time", "Balance", "Equity"])
     st.session_state["equity_history"].set_index("Time", inplace=True)
-
+    st.session_state["current_account"] = selected_broker_name
 def fetch_render_alerts():
     """Fetch stored alerts from the live Render webhook server."""
     render_url = "https://wise-steward-bot.onrender.com/check-alerts"
