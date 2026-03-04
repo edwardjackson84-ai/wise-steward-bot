@@ -67,10 +67,12 @@ def authenticate_config(config):
     
     print(f"Authenticating {config['EMAIL']} on {config['SERVER_TYPE']}...")
     resp = requests.post(login_url, json=login_data, headers=headers)
-    if not resp.ok or not resp.json().get('data', {}).get('token'):
+    resp_data = resp.json().get('data', {}) if resp.ok else {}
+    token = resp_data.get('user', {}).get('token')
+    if not token:
         raise Exception(f"{config['ENV_NAME']} Auth failed: {resp.text}")
         
-    token = resp.json()['data']['token']
+    token = resp.json()['data']['user']['token']
     
     # Fetch Account ID
     headers['Authorization'] = f'Bearer {token}'
