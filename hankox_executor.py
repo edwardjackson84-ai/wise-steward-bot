@@ -107,7 +107,7 @@ def is_session_active(symbol):
 
     return False
 
-async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name):
+async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, sl=0, tp=0):
     """Executes a trade instruction directly over the Hanko X WebSocket."""
     side_int = 1 if side.lower() == "buy" else 2
     
@@ -128,8 +128,8 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name):
                     "symbol": formatted_symbol,
                     "quantity": float(qty),
                     "side": side_int,
-                    "stop": 0,
-                    "limit": 0,
+                    "stop": float(sl) if sl else 0,
+                    "limit": float(tp) if tp else 0,
                     "trail": 0,
                     "commentary": "Wise Steward Webhook",
                     "tempOrderId": int(time.time() * 1000),
@@ -151,7 +151,7 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name):
         print(f"[{env_name}] WebSocket Error: {e}")
         return False
 
-async def place_multi_orders_async(active_configs, symbol, side, qty):
+async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0):
     """Run WebSocket trades concurrently for all active configs."""
     tasks = []
     
@@ -159,7 +159,7 @@ async def place_multi_orders_async(active_configs, symbol, side, qty):
         try:
             token, acc_id = authenticate_config(config)
             print(f"[{config['ENV_NAME']}] Routing {side} order for {qty} lots of {symbol} to {config['SERVER_TYPE']}...")
-            task = asyncio.create_task(execute_trade_ws(token, acc_id, symbol, side, qty, config["WS_URL"], config["ENV_NAME"]))
+            task = asyncio.create_task(execute_trade_ws(token, acc_id, symbol, side, qty, config["WS_URL"], config["ENV_NAME"], sl, tp))
             tasks.append({
                 "env": config["ENV_NAME"],
                 "task": task
@@ -179,9 +179,9 @@ async def place_multi_orders_async(active_configs, symbol, side, qty):
         
     return results
 
-def place_market_orders_sync(active_configs, symbol, side, qty):
+def place_market_orders_sync(active_configs, symbol, side, qty, sl=0, tp=0):
     """Synchronous wrapper to block the Flask thread while deploying."""
-    return asyncio.run(place_multi_orders_async(active_configs, symbol, side, qty))
+    return asyncio.run(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp))
 
 
 
@@ -252,7 +252,9 @@ def webhook():
                         return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
                         
                     side = data.get("side", "buy")
-                    results = place_market_orders_sync(active_configs, symbol, side, qty)
+                    sl = data.get("sl", 0)
+                    tp = data.get("tp", 0)
+                    results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp)
                     print(f"Multi-account execution results: {results}")
                     
             except Exception as e:
