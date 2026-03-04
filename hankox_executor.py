@@ -21,12 +21,27 @@ def get_active_configs():
     from dotenv import dotenv_values
     configs = []
     
+    # Load local toggle state cache if it exists
+    toggles = {}
+    toggle_path = os.path.join(script_dir, "toggles.json")
+    if os.path.exists(toggle_path):
+        try:
+            with open(toggle_path, "r") as f:
+                toggles = json.load(f)
+        except Exception:
+            pass
+
     # Check both demo and live files
     for env_name in [".env.hankodemo", ".env.hankolive"]:
         env_path = os.path.join(script_dir, env_name)
         if os.path.exists(env_path):
             env_vars = dotenv_values(env_path)
-            if env_vars.get("ACCOUNT_ACTIVE", "False").lower() == "true":
+            
+            # Toggles.json overrides the .env file default
+            file_acct_active = str(env_vars.get("ACCOUNT_ACTIVE", "False")).lower() == "true"
+            is_active = toggles.get(env_name, file_acct_active)
+            
+            if is_active:
                 email = env_vars.get("HANKOX_EMAIL") or env_vars.get("TRADELOCKER_EMAIL")
                 password = env_vars.get("HANKOX_PASSWORD") or env_vars.get("TRADELOCKER_PASSWORD")
                 server_type_raw = env_vars.get("HANKOX_SERVER", env_vars.get("TRADELOCKER_SERVER", "Hankotrade-Demo")).lower()
@@ -192,25 +207,21 @@ def toggle_account():
     is_active = data.get("active")
     
     if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.forexcom"]:
-        env_path = os.path.join(script_dir, env_name)
-        val = "True" if is_active else "False"
-        if not os.path.exists(env_path):
-            with open(env_path, "w") as f:
-                f.write("ACCOUNT_ACTIVE=" + val + "\n")
-        else:
-            with open(env_path, "r") as f:
-                lines = f.readlines()
-            with open(env_path, "w") as f:
-                found = False
-                for line in lines:
-                    if line.startswith("ACCOUNT_ACTIVE="):
-                        f.write("ACCOUNT_ACTIVE=" + val + "\n")
-                        found = True
-                    else:
-                        f.write(line)
-                if not found:
-                    f.write("ACCOUNT_ACTIVE=" + val + "\n")
-        return jsonify({"status": "success", "message": env_name + " set to " + str(is_active)})
+        toggle_path = os.path.join(script_dir, "toggles.json")
+        toggles = {}
+        if os.path.exists(toggle_path):
+            try:
+                with open(toggle_path, "r") as f:
+                    toggles = json.load(f)
+            except Exception:
+                pass
+                
+        toggles[env_name] = bool(is_active)
+        
+        with open(toggle_path, "w") as f:
+            json.dump(toggles, f)
+            
+        return jsonify({"status": "success", "message": f"{env_name} set to {is_active} in ephemeral cache"})
     return jsonify({"status": "error", "message": "Invalid environment file"}), 400
 
 @app.route("/webhook", methods=["POST"])
