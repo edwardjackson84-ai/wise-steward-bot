@@ -137,6 +137,22 @@ for b_name, b_env in broker_options.items():
     
     # Write back to file if changed
     if new_active_status != is_active:
+        import requests
+        try:
+            req = requests.post("https://wise-steward-bot.onrender.com/toggle", json={
+                "env_name": b_env,
+                "active": new_active_status
+            }, timeout=5)
+            if req.ok:
+                try: st.toast(f"Live Sync: {b_name} {'ON' if new_active_status else 'OFF'}", icon="✅")
+                except: pass
+            else:
+                try: st.error(f"Render Sync Failed: {req.text}")
+                except: pass
+        except Exception as e:
+            try: st.error(f"Failed to reach Render server: {e}")
+            except: pass
+            
         if os.path.exists(env_path):
             with open(env_path, "r") as f:
                 lines = f.readlines()

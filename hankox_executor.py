@@ -184,7 +184,39 @@ def place_market_orders_sync(active_configs, symbol, side, qty):
     return asyncio.run(place_multi_orders_async(active_configs, symbol, side, qty))
 
 
+
+@app.route("/toggle", methods=["POST"])
+def toggle_account():
+    data = request.json
+    env_name = data.get("env_name")
+    is_active = data.get("active")
+    
+    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.forexcom"]:
+        env_path = os.path.join(script_dir, env_name)
+        if not os.path.exists(env_path):
+            with open(env_path, "w") as f:
+                f.write(f"ACCOUNT_ACTIVE={'True' if is_active else 'False'}
+")
+        else:
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+            with open(env_path, "w") as f:
+                found = False
+                for line in lines:
+                    if line.startswith("ACCOUNT_ACTIVE="):
+                        f.write(f"ACCOUNT_ACTIVE={'True' if is_active else 'False'}
+")
+                        found = True
+                    else:
+                        f.write(line)
+                if not found:
+                    f.write(f"ACCOUNT_ACTIVE={'True' if is_active else 'False'}
+")
+        return jsonify({"status": "success", "message": f"{env_name} set to {is_active}"})
+    return jsonify({"status": "error", "message": "Invalid environment file"}), 400
+
 @app.route("/webhook", methods=["POST"])
+
 def webhook():
     if request.is_json or request.content_type == 'text/plain':
         try:
