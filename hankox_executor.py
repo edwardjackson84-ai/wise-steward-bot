@@ -290,7 +290,7 @@ def webhook():
                         print(f"Rejecting trade: Lot size {qty} is <= 0")
                         return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
                         
-                    side = data.get("side", "buy")
+                    side = data.get("side", action if action in ["buy", "sell"] else "buy")
                     # Pass sl and tp exactly as received (often strings) or default to 0
                     sl = data.get("sl", 0)
                     tp = data.get("tp", 0)
