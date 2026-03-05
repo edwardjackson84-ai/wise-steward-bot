@@ -151,8 +151,19 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, 
             await websocket.send(json.dumps(order_msg))
             
             try:
+                import zlib
+                import base64
+                def decode_hanko(msg):
+                    if isinstance(msg, str): return msg
+                    padded = msg + b"=" * (-len(msg) % 4)
+                    try: return zlib.decompress(base64.urlsafe_b64decode(padded)).decode('utf-8')
+                    except: return zlib.decompress(base64.b64decode(padded)).decode('utf-8')
+
                 for _ in range(3):
-                    await asyncio.wait_for(websocket.recv(), timeout=1.5)
+                    resp = await asyncio.wait_for(websocket.recv(), timeout=1.5)
+                    decoded = decode_hanko(resp)
+                    print(f"[{env_name}] WS RESPONSE: {decoded}")
+                    
             except asyncio.TimeoutError:
                 pass
                 
@@ -259,9 +270,9 @@ def webhook():
                         return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
                         
                     side = data.get("side", "buy")
-                    # Try to parse sl and tp from the webhook payload, passing 0 if they don't exist
-                    sl = float(data.get("sl", 0) or 0)
-                    tp = float(data.get("tp", 0) or 0)
+                    # Pass sl and tp exactly as received (often strings) or default to 0
+                    sl = data.get("sl", 0)
+                    tp = data.get("tp", 0)
                     
                     results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp)
                     print(f"Multi-account execution results: {results}")
