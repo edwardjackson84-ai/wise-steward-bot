@@ -259,8 +259,10 @@ def webhook():
                         return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
                         
                     side = data.get("side", "buy")
-                    sl = data.get("sl", 0)
-                    tp = data.get("tp", 0)
+                    # Try to parse sl and tp from the webhook payload, passing 0 if they don't exist
+                    sl = float(data.get("sl", 0) or 0)
+                    tp = float(data.get("tp", 0) or 0)
+                    
                     results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp)
                     print(f"Multi-account execution results: {results}")
                     
