@@ -159,13 +159,20 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, 
                     try: return zlib.decompress(base64.urlsafe_b64decode(padded)).decode('utf-8')
                     except: return zlib.decompress(base64.b64decode(padded)).decode('utf-8')
 
-                for _ in range(3):
-                    resp = await asyncio.wait_for(websocket.recv(), timeout=1.5)
-                    decoded = decode_hanko(resp)
-                    print(f"[{env_name}] WS RESPONSE: {decoded}")
-                    
-            except asyncio.TimeoutError:
-                pass
+                end_time = time.time() + 5.0
+                while time.time() < end_time:
+                    try:
+                        resp = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                        decoded = decode_hanko(resp)
+                        # Only print if it's the actual order response, ignoring market ticks
+                        if "NOK" in decoded or "tempOrderId" in decoded or "error" in decoded.lower():
+                            print(f"[{env_name}] WS ORDER RESP: {decoded}")
+                            break
+                    except asyncio.TimeoutError:
+                        continue
+                        
+            except Exception as e:
+                print(f"[{env_name}] WS Wait Error: {e}")
                 
             return True
             
@@ -202,8 +209,22 @@ async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0
     return results
 
 def place_market_orders_sync(active_configs, symbol, side, qty, sl=0, tp=0):
-    """Synchronous wrapper to block the Flask thread while deploying."""
-    return asyncio.run(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp))
+    """Synchronous wrapper to deploy orders async in a background thread."""
+    try:
+        def run_in_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp))
+            loop.close()
+            
+        import threading
+        thread = threading.Thread(target=run_in_loop)
+        thread.daemon = True
+        thread.start()
+        return "Dispatched to background thread"
+    except Exception as e:
+        print(f"Failed to dispatch thread: {e}")
+        return "Dispatch Error"
 
 
 
