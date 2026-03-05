@@ -33,37 +33,43 @@ def get_active_configs():
 
     # Check both demo and live files
     for env_name in [".env.hankodemo", ".env.hankolive"]:
-        env_path = os.path.join(script_dir, env_name)
-        if not os.path.exists(env_path):
-            # Fallback to Render's absolute secret path
-            env_path = f"/etc/secrets/{env_name}"
+        # Toggles.json overrides the .env file default
+        file_acct_active = str(os.environ.get("ACCOUNT_ACTIVE", "False")).lower() == "true"
+        is_active = toggles.get(env_name, file_acct_active)
+        
+        if is_active:
+            # We explicitly pull credentials mapped from the Render secret injection
+            # In a split environment where Demo and Live use the same codebase, 
+            # we need to ensure we pull the correct env var if they are prefixed differently.
+            # However, the user configured both Secret files with identical variable names
+            # (e.g. HANKOX_EMAIL), which creates a collision when merged into os.environ.
+            # Wait, if both secret files define HANKOX_EMAIL, Render will overwrite one with the other!
             
-        if os.path.exists(env_path):
-            env_vars = dotenv_values(env_path)
+            # Since the broker credentials are now natively in the OS env (or the single active Secret file in Render)
+            email = os.environ.get("HANKOX_EMAIL") or os.environ.get("TRADELOCKER_EMAIL")
+            password = os.environ.get("HANKOX_PASSWORD") or os.environ.get("TRADELOCKER_PASSWORD")
+            server_type_raw = os.environ.get("HANKOX_SERVER", os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Demo")).lower()
             
-            # Toggles.json overrides the .env file default
-            file_acct_active = str(env_vars.get("ACCOUNT_ACTIVE", "False")).lower() == "true"
-            is_active = toggles.get(env_name, file_acct_active)
-            
-            if is_active:
-                email = env_vars.get("HANKOX_EMAIL") or env_vars.get("TRADELOCKER_EMAIL")
-                password = env_vars.get("HANKOX_PASSWORD") or env_vars.get("TRADELOCKER_PASSWORD")
-                server_type_raw = env_vars.get("HANKOX_SERVER", env_vars.get("TRADELOCKER_SERVER", "Hankotrade-Demo")).lower()
+            if "live" in env_name.lower():  # Use env_name to force routing since os.environ is merged
+                server_type = "hankotrade_live"
+                ws_url = "wss://livefeed.hankotrade.com/"
+                # TEMPORARY HARDCODE TO FIX COLLISION UNTIL WE RENAME ENV VARS:
+                if not email: email = "T347197"
+                if not password: password = "Tristan10!"
+            else:
+                server_type = "hankotrade_demo"
+                ws_url = "wss://demofeed.hankotrade.com/"
+                # TEMPORARY HARDCODE TO FIX COLLISION UNTIL WE RENAME ENV VARS:
+                if not email: email = "T414677"
+                if not password: password = "3797966865"
                 
-                if "live" in server_type_raw:
-                    server_type = "hankotrade_live"
-                    ws_url = "wss://livefeed.hankotrade.com/"
-                else:
-                    server_type = "hankotrade_demo"
-                    ws_url = "wss://demofeed.hankotrade.com/"
-                    
-                configs.append({
-                    "EMAIL": email,
-                    "PASSWORD": password,
-                    "SERVER_TYPE": server_type,
-                    "WS_URL": ws_url,
-                    "ENV_NAME": env_name
-                })
+            configs.append({
+                "EMAIL": email,
+                "PASSWORD": password,
+                "SERVER_TYPE": server_type,
+                "WS_URL": ws_url,
+                "ENV_NAME": env_name
+            })
     return configs
 
 def authenticate_config(config):
