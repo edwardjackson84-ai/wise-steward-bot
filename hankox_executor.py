@@ -34,7 +34,7 @@ def get_active_configs():
     # Check both demo and live files
     for env_name in [".env.hankodemo", ".env.hankolive"]:
         # Toggles.json overrides the .env file default
-        file_acct_active = str(os.environ.get("ACCOUNT_ACTIVE", "False")).lower() == "true"
+        file_acct_active = str(os.environ.get("HANKOX_DEMO_ACTIVE", "True")).lower() == "true" if "demo" in env_name else str(os.environ.get("HANKOX_LIVE_ACTIVE", "False")).lower() == "true"
         is_active = toggles.get(env_name, file_acct_active)
         
         if is_active:
