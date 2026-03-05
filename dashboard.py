@@ -139,7 +139,7 @@ for b_name, b_env in broker_options.items():
     if new_active_status != is_active:
         import requests
         try:
-            req = requests.post("https://wise-steward-bot.onrender.com/toggle", json={
+            req = requests.post("https://wise-steward.onrender.com/toggle", json={
                 "env_name": b_env,
                 "active": new_active_status
             }, timeout=5)

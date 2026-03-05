@@ -34,6 +34,10 @@ def get_active_configs():
     # Check both demo and live files
     for env_name in [".env.hankodemo", ".env.hankolive"]:
         env_path = os.path.join(script_dir, env_name)
+        if not os.path.exists(env_path):
+            # Fallback to Render's absolute secret path
+            env_path = f"/etc/secrets/{env_name}"
+            
         if os.path.exists(env_path):
             env_vars = dotenv_values(env_path)
             
