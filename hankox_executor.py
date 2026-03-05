@@ -38,33 +38,19 @@ def get_active_configs():
         is_active = toggles.get(env_name, file_acct_active)
         
         if is_active:
-            # We explicitly pull credentials mapped from the Render secret injection
-            # In a split environment where Demo and Live use the same codebase, 
-            # we need to ensure we pull the correct env var if they are prefixed differently.
-            # However, the user configured both Secret files with identical variable names
-            # (e.g. HANKOX_EMAIL), which creates a collision when merged into os.environ.
-            # Wait, if both secret files define HANKOX_EMAIL, Render will overwrite one with the other!
-            
-            # Since the broker credentials are now natively in the OS env (or the single active Secret file in Render)
-            email = os.environ.get("HANKOX_EMAIL") or os.environ.get("TRADELOCKER_EMAIL")
-            password = os.environ.get("HANKOX_PASSWORD") or os.environ.get("TRADELOCKER_PASSWORD")
-            server_type_raw = os.environ.get("HANKOX_SERVER", os.environ.get("TRADELOCKER_SERVER", "Hankotrade-Demo")).lower()
-            
-            if "live" in env_name.lower():  # Use env_name to force routing since os.environ is merged
+            if "live" in env_name.lower():  
                 server_type = "hankotrade_live"
                 ws_url = "wss://livefeed.hankotrade.com/"
-                # TEMPORARY HARDCODE TO FIX COLLISION UNTIL WE RENAME ENV VARS:
-                if not email: email = "T347197"
-                if not password: password = "Tristan10!"
+                account_id = os.environ.get("HANKOX_LIVE_ACCOUNT_ID", "T347197")
+                password = os.environ.get("HANKOX_LIVE_PASSWORD", "Tristan10!")
             else:
                 server_type = "hankotrade_demo"
                 ws_url = "wss://demofeed.hankotrade.com/"
-                # TEMPORARY HARDCODE TO FIX COLLISION UNTIL WE RENAME ENV VARS:
-                if not email: email = "T414677"
-                if not password: password = "3797966865"
+                account_id = os.environ.get("HANKOX_DEMO_ACCOUNT_ID", "T414677")
+                password = os.environ.get("HANKOX_DEMO_PASSWORD", "3797966865")
                 
             configs.append({
-                "EMAIL": email,
+                "ACCOUNT_ID": account_id,
                 "PASSWORD": password,
                 "SERVER_TYPE": server_type,
                 "WS_URL": ws_url,
@@ -74,12 +60,12 @@ def get_active_configs():
 
 def authenticate_config(config):
     """Authenticate with Hanko X REST API for a specific config."""
-    if not config["EMAIL"] or not config["PASSWORD"]:
+    if not config["ACCOUNT_ID"] or not config["PASSWORD"]:
         raise ValueError(f"Missing credentials in {config['ENV_NAME']}")
         
     login_url = "https://tradeapi.hankotrade.com/api/login"
     login_data = {
-        "email": config["EMAIL"],
+        "email": config["ACCOUNT_ID"],
         "password": config["PASSWORD"],
         "server_type": config["SERVER_TYPE"]
     }
@@ -90,7 +76,7 @@ def authenticate_config(config):
         'Referer': 'https://trade.hankotrade.com/'
     }
     
-    print(f"Authenticating {config['EMAIL']} on {config['SERVER_TYPE']}...")
+    print(f"Authenticating {config['ACCOUNT_ID']} on {config['SERVER_TYPE']}...")
     resp = requests.post(login_url, json=login_data, headers=headers)
     resp_data = resp.json().get('data', {}) if resp.ok else {}
     token = resp_data.get('user', {}).get('token')
