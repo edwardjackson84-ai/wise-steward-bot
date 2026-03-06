@@ -120,7 +120,9 @@ def is_session_active(symbol):
 
 async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, sl=0, tp=0):
     """Executes a trade instruction directly over the Hanko X WebSocket."""
-    side_int = 1 if side.lower() == "buy" else 2
+    # Normalize side: accept 'buy', 'long' -> 1;  'sell', 'short' -> 2
+    side_lower = side.lower()
+    side_int = 1 if side_lower in ("buy", "long") else 2
     
     formatted_symbol = symbol if ".HKT" in symbol else f"{symbol}.HKT"
     
@@ -290,8 +292,20 @@ def webhook():
                         print(f"Rejecting trade: Lot size {qty} is <= 0")
                         return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
                         
-                    side = data.get("side", action if action in ["buy", "sell"] else "buy")
-                    # Pass sl and tp exactly as received (often strings) or default to 0
+                    # Normalize side direction from any recognized format
+                    # Pine Script sends: action='buy'/'sell' (most strategies)
+                    # King David sends:  side='long'/'short' AND action='entry'
+                    raw_side = data.get("side", "").lower()
+                    raw_action = action  # already lower-cased above
+
+                    if raw_side in ("buy", "sell", "long", "short"):
+                        side = raw_side  # explicit side key present — use it
+                    elif raw_action in ("buy", "sell"):
+                        side = raw_action  # infer from action (Elephant/FVG/Master)
+                    else:
+                        side = "buy"  # safe fallback (should never hit this)
+
+                    print(f"[DEBUG] raw_side={repr(raw_side)!r} raw_action={repr(raw_action)!r} resolved_side={side}")
                     sl = data.get("sl", 0)
                     tp = data.get("tp", 0)
                     
