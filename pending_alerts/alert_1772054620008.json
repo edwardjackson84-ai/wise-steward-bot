@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "sell",
+    "price": "49000.0",
+    "signal": "mean_reversion_sell",
+    "sl": "49100.0",
+    "symbol": "US30",
+    "timeframe": "3",
+    "tp": "48800.0"
+  },
+  "received_at": "2026-02-25T21:23:38.207871"
+}

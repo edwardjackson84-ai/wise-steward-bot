@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "buy",
+    "price": "6942.4",
+    "signal": "long_entry",
+    "sl": "6937.6873798229",
+    "symbol": "US500",
+    "timeframe": "3",
+    "tp": "6951.8252403543"
+  },
+  "received_at": "2026-02-26T00:36:02.604601"
+}

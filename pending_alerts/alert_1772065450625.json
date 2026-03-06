@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "sell",
+    "price": "1.35557",
+    "signal": "elephant_sell",
+    "sl": "1.35585",
+    "symbol": "GBPUSD",
+    "timeframe": "3",
+    "tp": "1.35501"
+  },
+  "received_at": "2026-02-26T00:24:03.707962"
+}

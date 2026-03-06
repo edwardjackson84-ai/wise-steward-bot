@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "49413.2",
+    "signal_type": "Bullish FVG Created",
+    "symbol": "US30"
+  },
+  "received_at": "2026-02-26T01:39:09.225393"
+}

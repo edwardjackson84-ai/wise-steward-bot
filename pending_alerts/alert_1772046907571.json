@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "49433.6",
+    "signal_type": "Change of Character DOWN",
+    "symbol": "US30"
+  },
+  "received_at": "2026-02-25T19:15:05.340786"
+}

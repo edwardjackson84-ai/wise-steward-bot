@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "action": "API_SUCCESS",
+    "price": "{'s': 'error', 'errmsg': 'Not enough margin to create Order #7277816997968844693 Sell   0.01  Price 25256.89 '}",
+    "signal_type": "Success",
+    "strategy": "Order Execution",
+    "symbol": "NAS100"
+  },
+  "received_at": "2026-02-26T03:00:02.600530"
+}

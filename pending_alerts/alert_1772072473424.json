@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "25260.9",
+    "signal_type": "Bullish FVG Created",
+    "symbol": "NAS100"
+  },
+  "received_at": "2026-02-26T02:21:00.658109"
+}

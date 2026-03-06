@@ -1,0 +1,11 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "49414.2",
+    "signal": "visual_verify_bos_down",
+    "signal_type": "Break of Structure DOWN",
+    "symbol": "US30",
+    "timeframe": "15"
+  },
+  "received_at": "2026-02-26T00:15:08.676526"
+}

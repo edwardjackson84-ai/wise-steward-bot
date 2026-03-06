@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "action": "close_long",
+    "message": "Long TP/SL Hit",
+    "symbol": "NAS100"
+  },
+  "received_at": "2026-02-26T04:09:05.394554"
+}

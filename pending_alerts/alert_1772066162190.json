@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "buy",
+    "price": "25286.1",
+    "signal": "long_entry",
+    "sl": "25258.5198559822",
+    "symbol": "NAS100",
+    "timeframe": "3",
+    "tp": "25341.2602880356"
+  },
+  "received_at": "2026-02-26T00:36:00.683470"
+}

@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "action": "API_SUCCESS",
+    "price": "{'s': 'ok', 'd': {'orderId': '7277816997968840742'}}",
+    "signal_type": "Success",
+    "strategy": "Order Execution",
+    "symbol": "GBPUSD"
+  },
+  "received_at": "2026-02-26T02:24:05.662359"
+}

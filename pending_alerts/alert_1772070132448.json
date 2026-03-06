@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "buy",
+    "price": "25260.9",
+    "signal": "elephant_buy",
+    "sl": "25238.6",
+    "symbol": "NAS100",
+    "timeframe": "3",
+    "tp": "25305.5"
+  },
+  "received_at": "2026-02-26T01:42:06.653645"
+}

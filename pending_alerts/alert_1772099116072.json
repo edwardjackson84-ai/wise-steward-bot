@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "sell",
+    "price": "1.17972",
+    "signal": "elephant_sell",
+    "sl": "1.18012",
+    "symbol": "EURUSD",
+    "timeframe": "3",
+    "tp": "1.17892"
+  },
+  "received_at": "2026-02-26T09:45:03.935565"
+}

@@ -1,0 +1,24 @@
+{
+  "payload": {
+    "action": "entry",
+    "atr_len": 14,
+    "contracts": 0.01,
+    "kd_atr": 15.11,
+    "price": 49420.2,
+    "reward_usd": 0.14,
+    "risk_usd": 0.01,
+    "rr": 10.0,
+    "side": "short",
+    "sl": 49435.31,
+    "sl_mult": 1,
+    "sl_points": 15.11,
+    "strategy": "King David Multi-TF",
+    "symbol": "US30",
+    "tf": "3",
+    "tp": 49269.15,
+    "tp_mult": 10,
+    "tp_points": 151.05,
+    "usd_per_point": 0.09
+  },
+  "received_at": "2026-02-26T00:18:06.220672"
+}

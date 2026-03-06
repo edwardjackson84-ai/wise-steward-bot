@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "1.35513",
+    "signal_type": "Price Entered FVG",
+    "symbol": "GBPUSD"
+  },
+  "received_at": "2026-02-25T22:33:02.540593"
+}

@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "sell",
+    "price": "25261.1",
+    "signal": "fvg_sweep_sell",
+    "sl": "25277.1571809459",
+    "symbol": "NAS100",
+    "timeframe": "3",
+    "tp": "25228.9856381082"
+  },
+  "received_at": "2026-02-26T03:54:05.730197"
+}

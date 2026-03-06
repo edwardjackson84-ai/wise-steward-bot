@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "1.1814",
+    "signal_type": "Price Entered FVG",
+    "symbol": "EURUSD"
+  },
+  "received_at": "2026-02-26T04:21:00.806686"
+}

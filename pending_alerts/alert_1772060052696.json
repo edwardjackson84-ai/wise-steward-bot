@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "1.18134",
+    "signal_type": "Bullish FVG Created",
+    "symbol": "EURUSD"
+  },
+  "received_at": "2026-02-25T22:54:09.930587"
+}

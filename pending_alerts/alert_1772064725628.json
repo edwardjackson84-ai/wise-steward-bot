@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "action": "API_SUCCESS",
+    "price": "{'s': 'ok', 'd': {'orderId': '7277816997968824126'}}",
+    "signal_type": "Success",
+    "strategy": "Order Execution",
+    "symbol": "NAS100"
+  },
+  "received_at": "2026-02-26T00:12:05.592425"
+}

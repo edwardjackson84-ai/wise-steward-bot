@@ -1,0 +1,11 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "1.17973",
+    "signal": "visual_verify_bos_down",
+    "signal_type": "Break of Structure DOWN",
+    "symbol": "EURUSD",
+    "timeframe": "15"
+  },
+  "received_at": "2026-02-26T10:00:10.476936"
+}

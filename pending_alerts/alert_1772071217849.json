@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "buy",
+    "price": "49429.2",
+    "signal": "fvg_sweep_buy",
+    "sl": "49313.7897305081",
+    "symbol": "US30",
+    "timeframe": "15",
+    "tp": "49660.0205389838"
+  },
+  "received_at": "2026-02-26T02:00:11.876181"
+}

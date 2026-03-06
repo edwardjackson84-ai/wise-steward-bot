@@ -1,0 +1,11 @@
+{
+  "payload": {
+    "action": "signal",
+    "price": "1.35665",
+    "signal": "visual_verify_bos_up",
+    "signal_type": "Break of Structure UP",
+    "symbol": "GBPUSD",
+    "timeframe": "15"
+  },
+  "received_at": "2026-02-26T01:15:04.793695"
+}

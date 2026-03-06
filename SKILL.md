@@ -18,6 +18,15 @@ This skill contains the framework and rules for the "Wise Steward" trading agent
 3. **`sabbath_mode.md`**
    - **Purpose:** Acts as a temporal guardrail. It must stop all trading activities from Friday sunset to Sunday morning.
 
+4. **`market_sentry.py`**
+   - **Purpose:** Background script that polls the Render webhook for new TradingView alerts and saves them to `pending_alerts/`.
+
+5. **`auto_journal.md`**
+   - **Purpose:** Instruction file for the agent to execute Visual Verification via the Browser, enforce the Trading Manifesto rules, and document actions.
+
+6. **`reporting_skills.md`**
+   - **Purpose:** Defines the end-of-week and end-of-month reporting cadences to summarize P&L, win/loss stats, and suggest strategy optimizations.
+
 ## Artifacts & Reporting
 - **Journal of the Sovereign Arbitrator:** For every trade executed, the agent must generate this artifact. It should thoroughly document both the technical reasoning (from Pine Script/TradeLocker) and the spiritual justifications (from the wisdom context) for the trade.
 

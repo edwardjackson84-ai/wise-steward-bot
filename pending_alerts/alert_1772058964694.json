@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "buy",
+    "price": "1.3553",
+    "signal": "fvg_sweep_buy",
+    "sl": "1.3544568208",
+    "symbol": "GBPUSD",
+    "timeframe": "3",
+    "tp": "1.3569863584"
+  },
+  "received_at": "2026-02-25T22:36:02.712326"
+}

@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "action": "buy",
+    "price": "49416.2",
+    "signal": "elephant_buy",
+    "sl": "49406.2",
+    "symbol": "US30",
+    "timeframe": "3",
+    "tp": "49436.2"
+  },
+  "received_at": "2026-02-26T00:51:06.291965"
+}

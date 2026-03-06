@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "action": "API_SUCCESS",
+    "price": "{'s': 'error', 'errmsg': 'Not enough margin to create Order #7277816997968841127 Buy   0.01  Price 1.35660 '}",
+    "signal_type": "Success",
+    "strategy": "Order Execution",
+    "symbol": "GBPUSD"
+  },
+  "received_at": "2026-02-26T02:27:05.690372"
+}
