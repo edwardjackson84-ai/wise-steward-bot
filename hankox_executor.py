@@ -16,6 +16,20 @@ if os.path.exists(env_path):
 
 app = Flask(__name__)
 
+SYMBOL_MAP = {
+    "GOLD": "XAUUSD",
+    "XAUUSD": "XAUUSD",
+    "US30": "US30",
+    "DJI": "US30",
+    "USA30": "US30",
+    "NAS100": "NAS100",
+    "NASDAQ": "NAS100",
+    "NQ": "NAS100",
+    "SPX": "SPX500",
+    "US500": "SPX500",
+    "SPX500": "SPX500"
+}
+
 def get_active_configs():
     """Reads all .env.hanko* files and returns configs for active accounts."""
     from dotenv import dotenv_values
@@ -124,7 +138,9 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, 
     side_lower = side.lower()
     side_int = 1 if side_lower in ("buy", "long") else 2
     
-    formatted_symbol = symbol if ".HKT" in symbol else f"{symbol}.HKT"
+    base_symbol = symbol.upper().replace(".HKT", "")
+    mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
+    formatted_symbol = f"{mapped_symbol}.HKT"
     
     try:
         async with websockets.connect(wss_url) as websocket:
@@ -285,25 +301,40 @@ def webhook():
                 
                 # Handling order logic
                 if action in ["close_long", "close_short"]:
-                    print(f"Execution logic for closing {symbol} positions is not yet implemented.")
-                else:
-                    qty = float(data.get("qty", os.environ.get(f"LOT_SIZE_{symbol}", os.environ.get("BASE_LOT_SIZE", 0.01))))
+                    # Implement "Netting" close by placing opposite trade
+                    # We use the quantity specified in the alert, or fallback to the same logic as entries
+                    side = "sell" if action == "close_long" else "buy"
+                    qty = float(data.get("contracts", data.get("qty", 0.0)))
                     if qty <= 0:
-                        print(f"Rejecting trade: Lot size {qty} is <= 0")
+                        qty = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
+                        if qty <= 0:
+                            qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
+                    
+                    print(f"Executing Netting CLOSE for {symbol}: placing {side} of {qty} lots")
+                    results = place_market_orders_sync(active_configs, symbol, side, qty, 0, 0)
+                else:
+                    # Qty logic: prioritize 'contracts' (actual lots) over 'qty' (often 1.0 default)
+                    qty = float(data.get("contracts", data.get("qty", 0.0)))
+                    if qty <= 0:
+                        qty = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
+                        if qty <= 0:
+                            qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
+                    
+                    if qty <= 0:
+                        print(f"Rejecting trade: Resolved lot size {qty} is still <= 0")
                         return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
                         
                     # Normalize side direction from any recognized format
-                    # Pine Script sends: action='buy'/'sell' (most strategies)
-                    # King David sends:  side='long'/'short' AND action='entry'
                     raw_side = data.get("side", "").lower()
                     raw_action = action  # already lower-cased above
 
                     if raw_side in ("buy", "sell", "long", "short"):
-                        side = raw_side  # explicit side key present — use it
-                    elif raw_action in ("buy", "sell"):
-                        side = raw_action  # infer from action (Elephant/FVG/Master)
+                        # Map long/short to buy/sell for the internal executor side_int logic
+                        side = "buy" if raw_side in ("buy", "long") else "sell"
+                    elif raw_action in ("buy", "sell", "long", "short"):
+                        side = "buy" if raw_action in ("buy", "long") else "sell"
                     else:
-                        side = "buy"  # safe fallback (should never hit this)
+                        side = "buy"  # safe fallback
 
                     print(f"[DEBUG] raw_side={repr(raw_side)!r} raw_action={repr(raw_action)!r} resolved_side={side}")
                     sl = data.get("sl", 0)
