@@ -48,10 +48,10 @@ SYMBOL_MAP = {
 }
 
 def get_active_configs():
-    """Reads all .env files and returns configs for active accounts."""
+    """Reads all account configurations from environment variables or .env files."""
     configs = []
     
-    # Load local toggle state cache if it exists
+    # Load local toggle state cache (useful for local dashboard, might be missing on Render)
     toggles = {}
     toggle_path = os.path.join(script_dir, "toggles.json")
     if os.path.exists(toggle_path):
@@ -61,59 +61,86 @@ def get_active_configs():
         except Exception:
             pass
 
-    # Order of evaluation: Hanko -> Crucial -> Atlas
+    # Known account types/files
     env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo"]
     
     for env_name in env_files:
+        # 1. Load values from file if it exists
         env_path = os.path.join(script_dir, env_name)
-        if not os.path.exists(env_path):
-            continue
+        file_vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
         
-        # Load the specific .env file to check activation/config
-        vals = dotenv_values(env_path)
+        # 2. Activation check: check toggles -> file -> os.environ -> default False
+        # We need to know which prefix to check for environment variables if the file is missing
+        # For Render, we often set ACCOUNT_ACTIVE_HANKODEMO or similar, but the current dashboard
+        # just sets ACCOUNT_ACTIVE inside the specific .env file.
+        # To make it robust on Render, we'll check if credentials exist.
         
-        # Priority: toggles.json -> .env file -> default False
-        is_active = vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
+        is_active = False
         if env_name in toggles:
             is_active = bool(toggles[env_name])
+        elif "ACCOUNT_ACTIVE" in file_vals:
+            is_active = file_vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
+        else:
+            # Fallback for Render: if matching credentials exist in os.environ, assume active
+            # unless explicitly disabled.
+            prefix = env_name.replace(".env.", "").upper()
+            if f"HANKOX_EMAIL_{prefix}" in os.environ or f"TRADELOCKER_EMAIL_{prefix}" in os.environ:
+                is_active = True
+            elif "hanko" in env_name.lower() and (os.environ.get("HANKOX_EMAIL") or os.environ.get("HANKOX_LIVE_ACCOUNT_ID")):
+                # Legacy check for the primary account
+                is_active = True
         
         if is_active:
             print(f"Routing logic includes active account: {env_name}")
             
+            # Helper to get val with priority: os.environ -> file_vals
+            def get_val(key):
+                # Try specific env var first (e.g. HANKOX_EMAIL_HANKODEMO)
+                prefix = env_name.replace(".env.", "").upper()
+                specific_key = f"{key}_{prefix}"
+                return os.environ.get(specific_key) or os.environ.get(key) or file_vals.get(key)
+
             # Identify Broker Category
             if "hanko" in env_name.lower():
                 b_type = "hankotrade"
                 is_live = "live" in env_name.lower()
                 
-                # Fetch credentials with fallbacks
-                configs.append({
-                    "name": env_name,
-                    "type": b_type,
-                    "is_live": is_live,
-                    "auth_url": "https://tradeapi.hankotrade.com/api/login",
-                    "acc_info_url": "https://tradeapi.hankotrade.com/api/act/user/account/balance",
-                    "ws_url": "wss://livefeed.hankotrade.com/" if is_live else "wss://demofeed.hankotrade.com/",
-                    "email": vals.get("HANKOX_EMAIL") or vals.get("HANKOX_LIVE_ACCOUNT_ID") or vals.get("HANKOX_DEMO_ACCOUNT_ID"),
-                    "password": vals.get("HANKOX_PASSWORD") or vals.get("HANKOX_LIVE_PASSWORD") or vals.get("HANKOX_DEMO_PASSWORD"),
-                    "server": vals.get("HANKOX_SERVER", "Hankotrade-Live" if is_live else "Hankotrade-Demo"),
-                    "symbol_suffix": ".HKT"
-                })
+                email = get_val("HANKOX_EMAIL") or get_val("HANKOX_LIVE_ACCOUNT_ID") or get_val("HANKOX_DEMO_ACCOUNT_ID")
+                password = get_val("HANKOX_PASSWORD") or get_val("HANKOX_LIVE_PASSWORD") or get_val("HANKOX_DEMO_PASSWORD")
+                
+                if email and password:
+                    configs.append({
+                        "name": env_name,
+                        "type": b_type,
+                        "is_live": is_live,
+                        "auth_url": "https://tradeapi.hankotrade.com/api/login",
+                        "acc_info_url": "https://tradeapi.hankotrade.com/api/act/user/account/balance",
+                        "ws_url": "wss://livefeed.hankotrade.com/" if is_live else "wss://demofeed.hankotrade.com/",
+                        "email": email,
+                        "password": password,
+                        "server": get_val("HANKOX_SERVER") or ("Hankotrade-Live" if is_live else "Hankotrade-Demo"),
+                        "symbol_suffix": ".HKT"
+                    })
             elif "crucial" in env_name.lower() or "atlas" in env_name.lower():
                 b_type = "tradelocker"
                 is_live = "live" in env_name.lower()
-                api_url = vals.get("TRADELOCKER_API_URL", "https://live.tradelocker.com/backend-api" if is_live else "https://demo.tradelocker.com/backend-api")
+                api_url = get_val("TRADELOCKER_API_URL") or ("https://live.tradelocker.com/backend-api" if is_live else "https://demo.tradelocker.com/backend-api")
                 
-                configs.append({
-                    "name": env_name,
-                    "type": b_type,
-                    "is_live": is_live,
-                    "api_url": api_url,
-                    "email": vals.get("TRADELOCKER_EMAIL"),
-                    "password": vals.get("TRADELOCKER_PASSWORD"),
-                    "server": vals.get("TRADELOCKER_SERVER"),
-                    "account_id": vals.get("TRADELOCKER_ACCOUNT_ID"),
-                    "symbol_suffix": "" # Direct symbol names
-                })
+                email = get_val("TRADELOCKER_EMAIL")
+                password = get_val("TRADELOCKER_PASSWORD")
+                
+                if email and password:
+                    configs.append({
+                        "name": env_name,
+                        "type": b_type,
+                        "is_live": is_live,
+                        "api_url": api_url,
+                        "email": email,
+                        "password": password,
+                        "server": get_val("TRADELOCKER_SERVER"),
+                        "account_id": get_val("TRADELOCKER_ACCOUNT_ID"),
+                        "symbol_suffix": "" 
+                    })
                 
     return configs
 
