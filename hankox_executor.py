@@ -6,19 +6,21 @@ from datetime import datetime
 import requests
 import websockets
 from flask import Flask, request, jsonify
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 # We look for a Hankox specific env, otherwise fallback to live
 env_path = os.path.join(script_dir, ".env.hankolive")
+# Only load .env if it exists locally, but do NOT override system/Render env vars
 if os.path.exists(env_path):
-    load_dotenv(env_path, override=True)
+    load_dotenv(env_path, override=False)
 
 app = Flask(__name__)
 
 SYMBOL_MAP = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
+    "XAGUSD": "XAGUSD",
     "US30": "US30",
     "DJI": "US30",
     "USA30": "US30",
@@ -26,13 +28,27 @@ SYMBOL_MAP = {
     "NASDAQ": "NAS100",
     "NQ": "NAS100",
     "SPX": "SPX500",
+    "SPX500": "SPX500",
     "US500": "SPX500",
-    "SPX500": "SPX500"
+    "EURUSD": "EURUSD",
+    "GBPUSD": "GBPUSD",
+    "USDJPY": "USDJPY",
+    "AUDUSD": "AUDUSD",
+    "USDCAD": "USDCAD",
+    "NZDUSD": "NZDUSD",
+    "CADJPY": "CADJPY",
+    "NZDJPY": "NZDJPY",
+    "GBPJPY": "GBPJPY",
+    "EURJPY": "EURJPY",
+    "USDCNH": "USDCNH",
+    "USDHKD": "USDHKD",
+    "BTCUSD": "BTCUSD",
+    "WTI": "WTI",
+    "BRENT": "BRENT"
 }
 
 def get_active_configs():
-    """Reads all .env.hanko* files and returns configs for active accounts."""
-    from dotenv import dotenv_values
+    """Reads all .env files and returns configs for active accounts."""
     configs = []
     
     # Load local toggle state cache if it exists
@@ -45,73 +61,137 @@ def get_active_configs():
         except Exception:
             pass
 
-    # Check both demo and live files
-    for env_name in [".env.hankodemo", ".env.hankolive"]:
-        # Toggles.json overrides the .env file default
-        file_acct_active = str(os.environ.get("HANKOX_DEMO_ACTIVE", "True")).lower() == "true" if "demo" in env_name else str(os.environ.get("HANKOX_LIVE_ACTIVE", "False")).lower() == "true"
-        is_active = toggles.get(env_name, file_acct_active)
+    # Order of evaluation: Hanko -> Crucial -> Atlas
+    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo"]
+    
+    for env_name in env_files:
+        env_path = os.path.join(script_dir, env_name)
+        if not os.path.exists(env_path):
+            continue
+        
+        # Load the specific .env file to check activation/config
+        vals = dotenv_values(env_path)
+        
+        # Priority: toggles.json -> .env file -> default False
+        is_active = vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
+        if env_name in toggles:
+            is_active = bool(toggles[env_name])
         
         if is_active:
-            if "live" in env_name.lower():  
-                server_type = "hankotrade_live"
-                ws_url = "wss://livefeed.hankotrade.com/"
-                account_id = os.environ.get("HANKOX_LIVE_ACCOUNT_ID", "T347197")
-                password = os.environ.get("HANKOX_LIVE_PASSWORD", "Tristan10!")
-            else:
-                server_type = "hankotrade_demo"
-                ws_url = "wss://demofeed.hankotrade.com/"
-                account_id = os.environ.get("HANKOX_DEMO_ACCOUNT_ID", "T414677")
-                password = os.environ.get("HANKOX_DEMO_PASSWORD", "3797966865")
+            print(f"Routing logic includes active account: {env_name}")
+            
+            # Identify Broker Category
+            if "hanko" in env_name.lower():
+                b_type = "hankotrade"
+                is_live = "live" in env_name.lower()
                 
-            configs.append({
-                "ACCOUNT_ID": account_id,
-                "PASSWORD": password,
-                "SERVER_TYPE": server_type,
-                "WS_URL": ws_url,
-                "ENV_NAME": env_name
-            })
+                # Fetch credentials with fallbacks
+                configs.append({
+                    "name": env_name,
+                    "type": b_type,
+                    "is_live": is_live,
+                    "auth_url": "https://tradeapi.hankotrade.com/api/login",
+                    "acc_info_url": "https://tradeapi.hankotrade.com/api/act/user/account/balance",
+                    "ws_url": "wss://livefeed.hankotrade.com/" if is_live else "wss://demofeed.hankotrade.com/",
+                    "email": vals.get("HANKOX_EMAIL") or vals.get("HANKOX_LIVE_ACCOUNT_ID") or vals.get("HANKOX_DEMO_ACCOUNT_ID"),
+                    "password": vals.get("HANKOX_PASSWORD") or vals.get("HANKOX_LIVE_PASSWORD") or vals.get("HANKOX_DEMO_PASSWORD"),
+                    "server": vals.get("HANKOX_SERVER", "Hankotrade-Live" if is_live else "Hankotrade-Demo"),
+                    "symbol_suffix": ".HKT"
+                })
+            elif "crucial" in env_name.lower() or "atlas" in env_name.lower():
+                b_type = "tradelocker"
+                is_live = "live" in env_name.lower()
+                api_url = vals.get("TRADELOCKER_API_URL", "https://live.tradelocker.com/backend-api" if is_live else "https://demo.tradelocker.com/backend-api")
+                
+                configs.append({
+                    "name": env_name,
+                    "type": b_type,
+                    "is_live": is_live,
+                    "api_url": api_url,
+                    "email": vals.get("TRADELOCKER_EMAIL"),
+                    "password": vals.get("TRADELOCKER_PASSWORD"),
+                    "server": vals.get("TRADELOCKER_SERVER"),
+                    "account_id": vals.get("TRADELOCKER_ACCOUNT_ID"),
+                    "symbol_suffix": "" # Direct symbol names
+                })
+                
     return configs
 
-def authenticate_config(config):
-    """Authenticate with Hanko X REST API for a specific config."""
-    if not config["ACCOUNT_ID"] or not config["PASSWORD"]:
-        raise ValueError(f"Missing credentials in {config['ENV_NAME']}")
+def authenticate_tradelocker(config):
+    """Authenticate with standard TradeLocker REST API."""
+    auth_url = f"{config['api_url']}/auth/jwt/token"
+    payload = {
+        "email": config["email"],
+        "password": config["password"],
+        "server": config["server"]
+    }
+    
+    print(f"[{config['name']}] Authenticating via TradeLocker REST...")
+    resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+    if not resp.ok:
+        raise Exception(f"TradeLocker Auth failed: {resp.text}")
         
-    login_url = "https://tradeapi.hankotrade.com/api/login"
+    token = resp.json().get("accessToken")
+    
+    # If account_id or acc_num is missing, fetch them
+    acc_id = config.get("account_id")
+    acc_num = config.get("account_num")
+    if not acc_id or not acc_num:
+        acc_url = f"{config['api_url']}/auth/jwt/all-accounts"
+        acc_resp = requests.get(acc_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        if acc_resp.ok:
+            accounts = acc_resp.json().get("accounts", [])
+            for a in accounts:
+                if acc_id and str(a.get("id")) == str(acc_id):
+                    acc_num = a.get("accNum")
+                    break
+                elif not acc_id:
+                    acc_id = a.get("id")
+                    acc_num = a.get("accNum")
+                    break
+            
+    return token, acc_id, acc_num
+
+def authenticate_hankotrade(config):
+    """Authenticate with Hanko X specific REST API."""
     login_data = {
-        "email": config["ACCOUNT_ID"],
-        "password": config["PASSWORD"],
-        "server_type": config["SERVER_TYPE"]
+        "email": config["email"],
+        "password": config["password"],
+        "server_type": "hankotrade_live" if config["is_live"] else "hankotrade_demo"
     }
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0',
         'Origin': 'https://trade.hankotrade.com',
         'Referer': 'https://trade.hankotrade.com/'
     }
     
-    print(f"Authenticating {config['ACCOUNT_ID']} on {config['SERVER_TYPE']}...")
-    resp = requests.post(login_url, json=login_data, headers=headers)
-    resp_data = resp.json().get('data', {}) if resp.ok else {}
-    token = resp_data.get('user', {}).get('token')
-    if not token:
-        raise Exception(f"{config['ENV_NAME']} Auth failed: {resp.text}")
+    print(f"[{config['name']}] Authenticating via Hanko X Specific API...")
+    resp = requests.post(config["auth_url"], json=login_data, headers=headers, timeout=10)
+    if not resp.ok:
+        raise Exception(f"Hanko Auth failed: {resp.text}")
         
-    token = resp.json()['data']['user']['token']
-    
+    token = resp.json().get('data', {}).get('user', {}).get('token')
+    if not token:
+        raise Exception("No token received from Hanko login.")
+        
     # Fetch Account ID
     headers['Authorization'] = f'Bearer {token}'
-    acc_url = "https://tradeapi.hankotrade.com/api/act/user/account/balance"
-    acc_resp = requests.post(acc_url, json={}, headers=headers)
+    acc_resp = requests.post(config["acc_info_url"], json={}, headers=headers, timeout=10)
+    acc_id = acc_resp.json().get('data', {}).get('ACCOUNT_ID') if acc_resp.ok else None
     
-    acc_id = None
-    if acc_resp.ok:
-        acc_id = acc_resp.json().get('data', {}).get('ACCOUNT_ID')
-        
-    if not acc_id:
-        raise Exception("Failed to retrieve Hanko X ACCOUNT_ID.")
-        
     return token, acc_id
+
+def is_sabbath_mode_active():
+    """Check if the current time is within the Sabbath blackout period (Friday 4 PM to Sunday 5 PM)."""
+    now = datetime.now()
+    if now.weekday() == 4 and now.hour >= 16:
+        return True
+    if now.weekday() == 5:
+        return True
+    if now.weekday() == 6 and now.hour < 17:
+        return True
+    return False
 
 def is_session_active(symbol):
     """Checks string constraints against current time for allowed trading sessions."""
@@ -122,8 +202,12 @@ def is_session_active(symbol):
     now_utc = datetime.utcnow()
     hour = now_utc.hour
     
+    # Standardized Session Hours
+    # Asian Session: 22:00 - 08:00 UTC
+    # London Session: 07:00 - 16:00 UTC
+    # New York Session: 13:00 - 22:00 UTC
     is_asian = (22 <= hour or hour < 8)
-    is_london = (8 <= hour < 16)
+    is_london = (7 <= hour < 16)
     is_new_york = (13 <= hour < 22)
     
     if "Asian" in allowed_sessions and is_asian: return True
@@ -132,11 +216,107 @@ def is_session_active(symbol):
 
     return False
 
+async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name, sl=0, tp=0):
+    """Executes a trade instruction directly over the TradeLocker REST API."""
+    side_lower = side.lower()
+    side_tl = "buy" if side_lower in ("buy", "long") else "sell"
+    
+    # Map Symbol to Instrument ID (TradeLocker requirement)
+    # We use a placeholder mapping or try to find it via API.
+    # For now, we'll use base symbol strings if the API supports it, but usually standard TL needs ID.
+    # NOTE: In Tradelocker, you place orders to /trade/accounts/{acc_id}/orders
+    order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
+    
+    # Symbol mapping logic for Indices/Forex
+    base_symbol = symbol.upper().replace(".HKT", "")
+    mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
+    
+    # We attempt to find the ID via a quick search or use a baked-in map for Crucial
+    # (Based on standard Crucial/Tradelocker IDs)
+    # BAKED-IN INSTRUMENT IDs (Broker Specific)
+    id_maps = {
+        ".env.crucialdemo": {
+            "US30": 17028, "NAS100": 17035, "SPX500": 17034,
+            "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
+            "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
+            "BTCUSD": 17949
+        },
+        ".env.cruciallive": {
+            "US30": 17028, "NAS100": 17035, "SPX500": 17034,
+            "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
+            "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
+            "BTCUSD": 17949
+        },
+        ".env.atlasdemo": {
+            "US30": 16337, "NAS100": 16341, "SPX500": 16336, "SPX": 16336,
+            "XAUUSD": 16343, "XAGUSD": 16344, "BTCUSD": 16304,
+            "EURUSD": 16316, "GBPUSD": 16310, "USDJPY": 16309,
+            "AUDUSD": 16323, "USDCAD": 16322, "NZDUSD": 16330,
+            "CADJPY": 16331, "NZDJPY": 16333, "GBPJPY": 16325, "EURJPY": 16329,
+            "WTI": 16306, "BRENT": 16307
+        }
+    }
+    
+    current_map = id_maps.get(env_name, id_maps[".env.crucialdemo"])
+    inst_id = current_map.get(mapped_symbol)
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "accNum": str(acc_num)
+    }
+
+    # Fetch Route ID for the instrument
+    route_id = None
+    try:
+        inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
+        inst_resp = requests.get(inst_url, headers=headers, timeout=10)
+        if inst_resp.ok:
+            data = inst_resp.json()
+            instruments = data.get("d", {}).get("instruments", []) if isinstance(data, dict) else []
+            for inst in instruments:
+                if str(inst.get("tradableInstrumentId")) == str(inst_id) or inst.get("name") == mapped_symbol:
+                    routes = inst.get("routes", [])
+                    for r in routes:
+                        if r.get("type") == "TRADE":
+                            route_id = r.get("id")
+                            break
+                    if route_id: break
+    except Exception as e:
+        print(f"[{env_name}] Error fetching routeId: {e}")
+
+    payload = {
+        "price": 0, # market
+        "qty": float(qty),
+        "side": side_tl,
+        "type": "market",
+        "tradableInstrumentId": inst_id if inst_id else mapped_symbol,
+        "routeId": route_id,
+        "stopLoss": float(sl) if sl else None,
+        "takeProfit": float(tp) if tp else None
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "accNum": str(acc_num)
+    }
+    
+    print(f"[{env_name}] REST Payload Dispatch: {json.dumps(payload)}")
+    resp = requests.post(order_url, json=payload, headers=headers, timeout=10)
+    
+    if resp.ok:
+        print(f"[{env_name}] REST Order Success: {resp.text}")
+        return True
+    else:
+        print(f"[{env_name}] REST Order Failed: {resp.text}")
+        return False
+
 async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, sl=0, tp=0):
     """Executes a trade instruction directly over the Hanko X WebSocket."""
-    # Normalize side: accept 'buy', 'long' -> 1;  'sell', 'short' -> 2
+    # Normalize side: accept 'buy', 'long' -> 1;  'sell', 'short' -> 0 (ActTrader spec)
     side_lower = side.lower()
-    side_int = 1 if side_lower in ("buy", "long") else 2
+    side_int = 1 if side_lower in ("buy", "long") else 0
     
     base_symbol = symbol.upper().replace(".HKT", "")
     mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
@@ -172,72 +352,135 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, 
                 import zlib
                 import base64
                 def decode_hanko(msg):
-                    if isinstance(msg, str): return msg
-                    padded = msg + b"=" * (-len(msg) % 4)
-                    try: return zlib.decompress(base64.urlsafe_b64decode(padded)).decode('utf-8')
-                    except: return zlib.decompress(base64.b64decode(padded)).decode('utf-8')
+                    try:
+                        # 1. Raw bytes check (direct zlib x9c)
+                        if isinstance(msg, bytes):
+                            if len(msg) > 2 and msg[0] == 0x78 and msg[1] == 0x9c:
+                                try: return zlib.decompress(msg).decode('utf-8')
+                                except: pass
+                        
+                        # 2. String check (base64 zlib or plain)
+                        if isinstance(msg, str):
+                            if not msg.startswith("eJ"): return msg
+                            try:
+                                msg_bytes = base64.b64decode(msg)
+                                return zlib.decompress(msg_bytes).decode('utf-8')
+                            except:
+                                return msg # Fallback to plain string
+                        
+                        # 3. Bytes fallback
+                        if isinstance(msg, bytes):
+                            try: return zlib.decompress(msg).decode('utf-8')
+                            except: pass
+                            
+                        return str(msg)
+                    except:
+                        return str(msg)
 
+                order_success = None  # None = no response received yet
                 end_time = time.time() + 5.0
                 while time.time() < end_time:
                     try:
                         resp = await asyncio.wait_for(websocket.recv(), timeout=1.0)
                         decoded = decode_hanko(resp)
-                        # Only print if it's the actual order response, ignoring market ticks
-                        if "NOK" in decoded or "tempOrderId" in decoded or "error" in decoded.lower():
-                            print(f"[{env_name}] WS ORDER RESP: {decoded}")
+                        
+                        if "{" in decoded:
+                            try:
+                                data = json.loads(decoded)
+                                msg = data.get("message", data)
+                                stat = msg.get("stat") if isinstance(msg, dict) else None
+                                
+                                # Identify order response by tempOrderId or stat field
+                                if "tempOrderId" in str(data) or stat in ("OK", "NOK"):
+                                    if stat == "NOK":
+                                        resp_msg = msg.get("resp_msg", "Unknown error")
+                                        print(f"[{env_name}] WS ORDER NOK: {resp_msg}")
+                                        order_success = False
+                                    elif stat == "OK" and "tempOrderId" in str(data):
+                                        resp_msg = msg.get("resp_msg", "Order placed")
+                                        print(f"[{env_name}] WS ORDER OK: {resp_msg}")
+                                        order_success = True
+                                    else:
+                                        # Intermediate OK message (tradeupdate, account, etc.)
+                                        print(f"[{env_name}] WS ORDER RESP: {decoded}")
+                                    
+                                    if order_success is not None:
+                                        break
+                            except:
+                                pass
+                        
+                        # Check for global errors in non-JSON messages
+                        if "error" in decoded.lower() and "tempOrderId" in decoded:
+                            print(f"[{env_name}] WS ERROR: {decoded}")
+                            order_success = False
                             break
+                            
                     except asyncio.TimeoutError:
                         continue
+                
+                if order_success is None:
+                    print(f"[{env_name}] WS: No order confirmation received (timeout)")
                         
             except Exception as e:
                 print(f"[{env_name}] WS Wait Error: {e}")
                 
-            return True
+            return order_success if order_success is not None else True
             
     except Exception as e:
         print(f"[{env_name}] WebSocket Error: {e}")
         return False
 
 async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0):
-    """Run WebSocket trades concurrently for all active configs."""
+    """Concurrent execution across multi-broker landscape."""
     tasks = []
     
     for config in active_configs:
         try:
-            token, acc_id = authenticate_config(config)
-            print(f"[{config['ENV_NAME']}] Routing {side} order for {qty} lots of {symbol} to {config['SERVER_TYPE']}...")
-            task = asyncio.create_task(execute_trade_ws(token, acc_id, symbol, side, qty, config["WS_URL"], config["ENV_NAME"], sl, tp))
-            tasks.append({
-                "env": config["ENV_NAME"],
-                "task": task
-            })
+            # 1. Authenticate based on type
+            if config["type"] == "hankotrade":
+                token, acc_id = authenticate_hankotrade(config)
+                # 2. Hanko uses WS dispatch
+                task = asyncio.create_task(execute_trade_ws(token, acc_id, symbol, side, qty, config["ws_url"], config["name"], sl, tp))
+            else:
+                token, acc_id, acc_num = authenticate_tradelocker(config)
+                # 2. TradeLocker uses REST dispatch
+                task = asyncio.create_task(execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, config["api_url"], config["name"], sl, tp))
+                
+            tasks.append({"env": config["name"], "task": task})
         except Exception as e:
-            print(f"[{config['ENV_NAME']}] Error preparing trade: {e}")
+            print(f"[{config['name']}] Multi-Routing Fail: {e}")
             
     results = {}
     for t in tasks:
-        success = await t["task"]
-        env_name = t["env"]
-        if success:
-            print(f"[{env_name}] Trade successfully transmitted!")
-        else:
-            print(f"[{env_name}] Trade transmission failed.")
-        results[env_name] = success
+        try:
+            success = await t["task"]
+            results[t["env"]] = success
+            status = "✅ SUCCESS" if success else "❌ FAILED"
+            print(f"[{t['env']}] Global Routing Result: {status}")
+        except Exception as e:
+            print(f"[{t['env']}] Task Error: {e}")
+            results[t["env"]] = False
         
     return results
 
 def place_market_orders_sync(active_configs, symbol, side, qty, sl=0, tp=0):
     """Synchronous wrapper to deploy orders async in a background thread."""
+    import threading
+    # Guard: cap concurrent trade threads to avoid memory exhaustion on Render
+    active_thread_count = threading.active_count()
+    if active_thread_count > 20:
+        print(f"WARNING: {active_thread_count} threads active — skipping dispatch to avoid OOM")
+        return "Skipped (thread limit)"
     try:
         def run_in_loop():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp))
-            loop.close()
+            try:
+                loop.run_until_complete(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp))
+            finally:
+                loop.close()
             
-        import threading
-        thread = threading.Thread(target=run_in_loop)
-        thread.daemon = True
+        thread = threading.Thread(target=run_in_loop, daemon=True)
         thread.start()
         return "Dispatched to background thread"
     except Exception as e:
@@ -252,7 +495,7 @@ def toggle_account():
     env_name = data.get("env_name")
     is_active = data.get("active")
     
-    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.forexcom"]:
+    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.forexcom"]:
         toggle_path = os.path.join(script_dir, "toggles.json")
         toggles = {}
         if os.path.exists(toggle_path):
@@ -280,19 +523,32 @@ def webhook():
             
             symbol = data.get("symbol", "UNKNOWN")
             action = data.get("action", "").lower()
+
+            # 0. Sabbath Mode Check
+            bypass_sabbath = str(data.get("bypass_sabbath", "false")).lower() == "true"
+            if is_sabbath_mode_active() and not bypass_sabbath:
+                print(f"Rejecting trade signal for {symbol}: Sabbath Mode Active.")
+                return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
             
-            # 1. Session Filter
-            if action not in ["close_long", "close_short"] and symbol != "UNKNOWN":
+            # 1. Session Filter — only applies to entry actions, not close/signal
+            # Also skip session check if 'signal' action (journal only)
+            skip_session_check = action in ["close_long", "close_short", "close_all", "signal"]
+            if not skip_session_check and symbol != "UNKNOWN":
                 if not is_session_active(symbol):
                     print(f"Rejecting trade signal for {symbol}: Outside allowed sessions.")
                     return jsonify({"status": "rejected", "reason": "Session Closed"}), 200
 
-            # 2. Visual Arbiter (mocked/placeholder as per other executors)
+            # 2. Filter out non-trade actions (signals are journal-only)
+            if action == "signal":
+                print(f"Signal alert received for {symbol}. Logging only — no trade execution.")
+                return jsonify({"status": "logged", "message": f"Signal for {symbol} recorded"}), 200
+
+            # 3. Visual Arbiter (mocked/placeholder as per other executors)
             enable_vision = str(os.environ.get("ENABLE_VISUAL_ARBITER", "false")).lower() == "true"
-            if enable_vision and action not in ["close_long", "close_short"]:
+            if enable_vision and action not in ["close_long", "close_short", "close_all"]:
                 print("Visual Arbiter checking (stub)...")
                 
-            # 3. Execution Phase
+            # 4. Execution Phase
             try:
                 active_configs = get_active_configs()
                 if not active_configs:
@@ -300,9 +556,22 @@ def webhook():
                     return jsonify({"status": "ignored", "reason": "No active accounts"}), 200
                 
                 # Handling order logic
-                if action in ["close_long", "close_short"]:
+                if action == "close_all":
+                    # Sabbath / End-of-Week: close ALL open positions by netting
+                    # We close both buy and sell sides for all mapped symbols
+                    print("CLOSE_ALL triggered — attempting to flatten all positions.")
+                    all_symbols = list(SYMBOL_MAP.values())
+                    for close_sym in set(all_symbols):
+                        qty = float(os.environ.get(f"LOT_SIZE_{close_sym}", 0.0))
+                        if qty <= 0:
+                            qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
+                        # Close any longs (sell) and shorts (buy)
+                        place_market_orders_sync(active_configs, close_sym, "sell", qty, 0, 0)
+                        place_market_orders_sync(active_configs, close_sym, "buy", qty, 0, 0)
+                    print("CLOSE_ALL sequence dispatched.")
+
+                elif action in ["close_long", "close_short"]:
                     # Implement "Netting" close by placing opposite trade
-                    # We use the quantity specified in the alert, or fallback to the same logic as entries
                     side = "sell" if action == "close_long" else "buy"
                     qty = float(data.get("contracts", data.get("qty", 0.0)))
                     if qty <= 0:
@@ -312,7 +581,8 @@ def webhook():
                     
                     print(f"Executing Netting CLOSE for {symbol}: placing {side} of {qty} lots")
                     results = place_market_orders_sync(active_configs, symbol, side, qty, 0, 0)
-                else:
+
+                elif action in ("buy", "sell", "long", "short", "entry"):
                     # Qty logic: prioritize 'contracts' (actual lots) over 'qty' (often 1.0 default)
                     qty = float(data.get("contracts", data.get("qty", 0.0)))
                     if qty <= 0:
@@ -329,7 +599,6 @@ def webhook():
                     raw_action = action  # already lower-cased above
 
                     if raw_side in ("buy", "sell", "long", "short"):
-                        # Map long/short to buy/sell for the internal executor side_int logic
                         side = "buy" if raw_side in ("buy", "long") else "sell"
                     elif raw_action in ("buy", "sell", "long", "short"):
                         side = "buy" if raw_action in ("buy", "long") else "sell"
@@ -342,6 +611,9 @@ def webhook():
                     
                     results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp)
                     print(f"Multi-account execution results: {results}")
+                else:
+                    print(f"Unknown action '{action}' — ignoring.")
+                    return jsonify({"status": "ignored", "reason": f"Unknown action: {action}"}), 200
                     
             except Exception as e:
                 import sys
