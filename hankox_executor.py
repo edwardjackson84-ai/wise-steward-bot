@@ -62,7 +62,7 @@ def get_active_configs():
             pass
 
     # Known account types/files
-    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo"]
+    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.gatesdemo"]
     
     for env_name in env_files:
         # 1. Load values from file if it exists
@@ -121,7 +121,7 @@ def get_active_configs():
                         "server": get_val("HANKOX_SERVER") or ("Hankotrade-Live" if is_live else "Hankotrade-Demo"),
                         "symbol_suffix": ".HKT"
                     })
-            elif "crucial" in env_name.lower() or "atlas" in env_name.lower():
+            elif "crucial" in env_name.lower() or "atlas" in env_name.lower() or "gates" in env_name.lower():
                 b_type = "tradelocker"
                 is_live = "live" in env_name.lower()
                 api_url = get_val("TRADELOCKER_API_URL") or ("https://live.tradelocker.com/backend-api" if is_live else "https://demo.tradelocker.com/backend-api")

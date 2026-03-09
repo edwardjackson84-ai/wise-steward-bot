@@ -15,6 +15,11 @@ REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 import sys
+import requests
+import pandas as pd
+from datetime import datetime
+import google.generativeai as genai
+
 sys.path.append(BASE_DIR)
 from fetch_performance import get_strategy_performance
 from geopolitics_engine import fetch_world_news_rss, analyze_geopolitics
@@ -23,6 +28,86 @@ from geopolitics_engine import fetch_world_news_rss, analyze_geopolitics
 for directory in [ALERTS_DIR, JOURNAL_DIR, REPORTS_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
+
+# --- Spiritual Engine Functions ---
+@st.cache_data(ttl=3600) # Memory cache for 1 hour
+def get_daily_alignment():
+    """Fetches a Verse of the Day and generates a reflection with disk-based persistence."""
+    cache_file = os.path.join(BASE_DIR, "daily_alignment.json")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # 1. Try loading from disk cache first
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                cached_data = json.load(f)
+                if cached_data.get("date") == today_str:
+                    return cached_data
+        except:
+            pass
+
+    try:
+        # Fallback verses
+        verses = [
+            {"ref": "Proverbs 16:3", "text": "Commit your work to the Lord, and your plans will be established."},
+            {"ref": "Philippians 4:13", "text": "I can do all things through him who strengthens me."},
+            {"ref": "Joshua 1:9", "text": "Have I not commanded you? Be strong and courageous. Do not be frightened, and do not be dismayed, for the Lord your God is with you wherever you go."},
+            {"ref": "Matthew 6:33", "text": "But seek first the kingdom of God and his righteousness, and all these things will be added to you."},
+            {"ref": "Proverbs 3:5-6", "text": "Trust in the Lord with all your heart, and do not lean on your own understanding. In all your ways acknowledge him, and he will make straight your paths."}
+        ]
+        
+        day_of_year = datetime.now().timetuple().tm_yday
+        selected = verses[day_of_year % len(verses)]
+        
+        # 2. Generate the "Deep Study" using Gemini
+        api_key = os.environ.get("GEMINI_API_KEY")
+        study = None
+        if api_key:
+            try:
+                genai.configure(api_key=api_key)
+                # Using 2.0-flash-lite as it often has different/higher quotas
+                model = genai.GenerativeModel('gemini-2.0-flash-lite')
+                prompt = (
+                    f"As a sovereign spiritual guide for a trader, provide a profound 3-sentence reflection "
+                    f"on this verse: '{selected['text']}' ({selected['ref']}).\n"
+                    "Sentence 1: Mention the specific Hebrew, Latin, or Aramaic etymology of a key word in the verse.\n"
+                    "Sentence 2: Provide a deeper esoteric or metaphysical interpretation of the verse as it relates to internal alignment and market reality.\n"
+                    "Sentence 3: Give a concise, actionable application for a trader to maintain discipline and stewardship today.\n"
+                    "The tone must be premium, authoritative, and esoteric."
+                )
+                response = model.generate_content(prompt)
+                study = response.text.strip()
+            except Exception as api_err:
+                print(f"Gemini API Error: {api_err}")
+                if "quota" in str(api_err).lower():
+                    study = "The heavens are silent as the quota has been exceeded. Realign with the existing word and maintain discipline."
+                else:
+                    study = f"Spiritual channel currently hazy: {api_err}"
+        
+        result = {
+            "ref": selected['ref'],
+            "text": selected['text'],
+            "study": study or "Stay aligned with your purpose. (Gemini offline)",
+            "date": today_str
+        }
+
+        # 3. Save to disk cache if we got a valid study
+        if study and "quota" not in study.lower():
+            try:
+                with open(cache_file, "w") as f:
+                    json.dump(result, f)
+            except:
+                pass
+                
+        return result
+
+    except Exception as e:
+        return {
+            "ref": "Proverbs 16:3",
+            "text": "Commit your work to the Lord, and your plans will be established.",
+            "study": f"Stay aligned. (Error: {e})",
+            "date": today_str
+        }
 
 st.set_page_config(page_title="Wise Steward Agent Dashboard", page_icon="🧿", layout="wide")
 
@@ -95,6 +180,19 @@ st.markdown("""
 st.title("🧿 Wise Steward")
 st.markdown('<p class="subtitle">Autonomous Trading & Visual Arbiter Protocol</p>', unsafe_allow_html=True)
 
+# --- Top Menu Spiritual Header ---
+alignment = get_daily_alignment()
+st.markdown(f"""
+    <div style="background: rgba(255, 255, 255, 0.4); border-radius: 15px; padding: 25px; margin-bottom: 30px; border: 1px solid rgba(139, 92, 246, 0.2); backdrop-filter: blur(10px);">
+        <h3 style="font-family: 'Cinzel', serif; color: #1e293b; text-align: center; margin-bottom: 15px; letter-spacing: 2px;">Daily Alignment</h3>
+        <p style="font-style: italic; font-size: 1.3rem; color: #475569; text-align: center; font-weight: 300; line-height: 1.6;">"{alignment['text']}"</p>
+        <p style="text-align: center; color: #8b5cf6; font-weight: 600; margin-bottom: 20px;">— {alignment['ref']}</p>
+        <div style="background: rgba(139, 92, 246, 0.05); border-left: 4px solid #8b5cf6; padding: 15px; border-radius: 0 8px 8px 0; max-width: 900px; margin: 0 auto;">
+            <p style="color: #1e293b; margin: 0; font-size: 1.05rem; line-height: 1.5;"><strong>Today's Study:</strong> {alignment['study']}</p>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["Live Sentry Monitor", "Economic Calendar", "Global Chessboard (AI)", "Visual Journal", "Performance Reports"])
 
@@ -106,13 +204,25 @@ st.sidebar.title("Broker Configuration")
 broker_options = {
     "Forex.com RAW": ".env.forexcom",
     "Hanko X Demo (WS)": ".env.hankodemo",
-    "Hanko X Live (WS)": ".env.hankolive"
+    "Hanko X Live (WS)": ".env.hankolive",
+    "Crucial Markets Demo": ".env.crucialdemo",
+    "Crucial Markets Live": ".env.cruciallive",
+    "Atlas Demo": ".env.atlasdemo",
+    "GatesFX Demo": ".env.gatesdemo"
 }
 selected_broker_name = st.sidebar.selectbox("Select Account to Edit Risk", list(broker_options.keys()))
 env_file = os.path.join(BASE_DIR, broker_options[selected_broker_name])
 
 # Dynamically reload environment variables for the selected broker to edit
 if os.path.exists(env_file):
+    # Clear "pollen" from previous broker selections to ensure isolation
+    clearing_vars = [
+        "HANKOX_EMAIL", "HANKOX_PASSWORD", "HANKOX_SERVER", "HANKOX_DEMO_ACCOUNT_ID", "HANKOX_LIVE_ACCOUNT_ID",
+        "TRADELOCKER_EMAIL", "TRADELOCKER_PASSWORD", "TRADELOCKER_SERVER", "TRADELOCKER_ACCOUNT_ID", "TRADELOCKER_API_URL"
+    ]
+    for v in clearing_vars:
+        os.environ.pop(v, None)
+            
     load_dotenv(env_file, override=True)
 else:
     st.sidebar.warning(f"Configuration file {broker_options[selected_broker_name]} not found. Risk settings will not save.")
@@ -376,13 +486,15 @@ def get_hanko_token(email, password, server_type):
         pass
     return None
 
-def fetch_account_metrics():
+def fetch_account_metrics(broker_name):
+    """Fetches metrics for a specific broker name by reading its dedicated .env variables."""
     # 1. Check if we are focusing on a Hanko X Account
-    hanko_email = os.environ.get("HANKOX_EMAIL") or os.environ.get("TRADELOCKER_EMAIL")
-    hanko_password = os.environ.get("HANKOX_PASSWORD") or os.environ.get("TRADELOCKER_PASSWORD")
-    hanko_server = os.environ.get("HANKOX_SERVER", "")
-    
-    if hanko_email and hanko_password and "Hanko" in hanko_server:
+    if "Hanko" in broker_name:
+        # For Hanko, we use HANKOX specific keys or fallbacks
+        hanko_email = os.environ.get("HANKOX_EMAIL") or os.environ.get("TRADELOCKER_EMAIL")
+        hanko_password = os.environ.get("HANKOX_PASSWORD") or os.environ.get("TRADELOCKER_PASSWORD")
+        hanko_server = os.environ.get("HANKOX_SERVER", "")
+        
         server_identifier = "hankotrade_live" if "Live" in hanko_server else "hankotrade_demo"
         token = get_hanko_token(hanko_email, hanko_password, server_identifier)
         if token:
@@ -409,10 +521,10 @@ def fetch_account_metrics():
                 pass
         return None
         
-    # 2. Fallback to older TradeLocker logic for Crucial Markets / others
-    target_id = os.environ.get("TRADELOCKER_ACCOUNT_ID", "1961103")
+    # 2. TradeLocker logic for Crucial Markets / Atlas / others
+    target_id = os.environ.get("TRADELOCKER_ACCOUNT_ID")
     token, api_url = get_auth_token()
-    if not token:
+    if not token or not target_id:
         return None
     try:
         url = f"{api_url}/auth/jwt/all-accounts"
@@ -425,6 +537,7 @@ def fetch_account_metrics():
                     balance = float(acct.get("accountBalance", 0))
                     raw_name = acct.get("name", "Unknown")
                     server_name = raw_name.split("#")[0] if "#" in raw_name else raw_name
+                    # TradeLocker doesn't always show dynamic equity in this endpoint, balance is safer baseline
                     return {
                         "balance": balance, 
                         "equity": balance,
@@ -459,7 +572,7 @@ if page == "Live Sentry Monitor":
     st.header("📡 Live Sentry Monitor")
 
     # Metrics + Chart Logic
-    metrics = fetch_account_metrics()
+    metrics = fetch_account_metrics(selected_broker_name)
     if metrics:
         now_str = datetime.now().strftime("%H:%M:%S")
         new_row = pd.DataFrame({"Balance": [metrics["balance"]], "Equity": [metrics["equity"]]}, index=[now_str])
