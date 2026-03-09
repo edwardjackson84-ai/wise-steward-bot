@@ -263,24 +263,28 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     # BAKED-IN INSTRUMENT IDs (Broker Specific)
     id_maps = {
         ".env.crucialdemo": {
-            "US30": 17028, "NAS100": 17035, "SPX500": 17034,
+            "U30USD": 17028, "U100USD": 17035, "U500USD": 17034,
             "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
             "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
             "BTCUSD": 17949
         },
         ".env.cruciallive": {
-            "US30": 17028, "NAS100": 17035, "SPX500": 17034,
+            "U30USD": 17028, "U100USD": 17035, "U500USD": 17034,
             "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
             "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
             "BTCUSD": 17949
         },
         ".env.atlasdemo": {
-            "US30": 16337, "NAS100": 16341, "SPX500": 16336, "SPX": 16336,
+            "U30USD": 16337, "U100USD": 16341, "U500USD": 16336,
             "XAUUSD": 16343, "XAGUSD": 16344, "BTCUSD": 16304,
             "EURUSD": 16316, "GBPUSD": 16310, "USDJPY": 16309,
             "AUDUSD": 16323, "USDCAD": 16322, "NZDUSD": 16330,
             "CADJPY": 16331, "NZDJPY": 16333, "GBPJPY": 16325, "EURJPY": 16329,
             "WTI": 16306, "BRENT": 16307
+        },
+        ".env.gatesdemo": {
+            "U30USD": 13638, "U100USD": 13645, "U500USD": 13644,
+            "EURUSD": 13439, "GBPUSD": 13443, "XAUUSD": 13676
         }
     }
     
@@ -312,6 +316,9 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     except Exception as e:
         print(f"[{env_name}] Error fetching routeId: {e}")
 
+    # GatesFX Route ID (from discovery)
+    route_id = 1482858 if ".env.gates" in env_name else route_id
+    
     payload = {
         "price": 0, # market
         "qty": float(qty),
@@ -463,6 +470,12 @@ async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0
     
     for config in active_configs:
         try:
+            # Pre-resolve symbol mapping for logging clarity
+            base_sym = symbol.upper().replace(".HKT", "")
+            mapped_sym = SYMBOL_MAP.get(base_sym, base_sym)
+            display_sym = f"{mapped_sym}{config.get('symbol_suffix', '')}"
+            print(f"[{config['name']}] Preparing to route {side} for {display_sym}...")
+
             # 1. Authenticate based on type
             if config["type"] == "hankotrade":
                 token, acc_id = authenticate_hankotrade(config)
