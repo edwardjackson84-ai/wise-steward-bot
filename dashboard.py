@@ -448,12 +448,21 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-def get_auth_token():
-    # Read env vars INSIDE the function so they are read AFTER load_dotenv() runs
-    api_url  = os.environ.get("TRADELOCKER_API_URL", "https://demo.tradelocker.com/backend-api")
-    email    = os.environ.get("TRADELOCKER_EMAIL")
-    password = os.environ.get("TRADELOCKER_PASSWORD")
-    server   = os.environ.get("TRADELOCKER_SERVER")
+def get_val(key, env_name):
+    """Helper to get val with priority: os.environ (prefixed) -> os.environ (global)"""
+    if not env_name:
+        return os.environ.get(key)
+    prefix = env_name.replace(".env.", "").upper()
+    specific_key = f"{key}_{prefix}"
+    return os.environ.get(specific_key) or os.environ.get(key)
+
+def get_auth_token(env_name=None):
+    # Read env vars with environmental awareness
+    api_url  = get_val("TRADELOCKER_API_URL", env_name) or "https://demo.tradelocker.com/backend-api"
+    email    = get_val("TRADELOCKER_EMAIL", env_name)
+    password = get_val("TRADELOCKER_PASSWORD", env_name)
+    server   = get_val("TRADELOCKER_SERVER", env_name)
+    
     if not email or not password or not server:
         return None, None
     try:
@@ -486,14 +495,14 @@ def get_hanko_token(email, password, server_type):
         pass
     return None
 
-def fetch_account_metrics(broker_name):
+def fetch_account_metrics(broker_name, env_name=None):
     """Fetches metrics for a specific broker name by reading its dedicated .env variables."""
     # 1. Check if we are focusing on a Hanko X Account
     if "Hanko" in broker_name:
         # For Hanko, we use HANKOX specific keys or fallbacks
-        hanko_email = os.environ.get("HANKOX_EMAIL") or os.environ.get("TRADELOCKER_EMAIL")
-        hanko_password = os.environ.get("HANKOX_PASSWORD") or os.environ.get("TRADELOCKER_PASSWORD")
-        hanko_server = os.environ.get("HANKOX_SERVER", "")
+        hanko_email = get_val("HANKOX_EMAIL", env_name) or get_val("TRADELOCKER_EMAIL", env_name)
+        hanko_password = get_val("HANKOX_PASSWORD", env_name) or get_val("TRADELOCKER_PASSWORD", env_name)
+        hanko_server = get_val("HANKOX_SERVER", env_name) or ""
         
         server_identifier = "hankotrade_live" if "Live" in hanko_server else "hankotrade_demo"
         token = get_hanko_token(hanko_email, hanko_password, server_identifier)
@@ -522,8 +531,8 @@ def fetch_account_metrics(broker_name):
         return None
         
     # 2. TradeLocker logic for Crucial Markets / Atlas / others
-    target_id = os.environ.get("TRADELOCKER_ACCOUNT_ID")
-    token, api_url = get_auth_token()
+    target_id = get_val("TRADELOCKER_ACCOUNT_ID", env_name)
+    token, api_url = get_auth_token(env_name)
     if not token or not target_id:
         return None
     try:
@@ -572,7 +581,8 @@ if page == "Live Sentry Monitor":
     st.header("📡 Live Sentry Monitor")
 
     # Metrics + Chart Logic
-    metrics = fetch_account_metrics(selected_broker_name)
+    current_env = broker_options.get(selected_broker_name)
+    metrics = fetch_account_metrics(selected_broker_name, current_env)
     if metrics:
         now_str = datetime.now().strftime("%H:%M:%S")
         new_row = pd.DataFrame({"Balance": [metrics["balance"]], "Equity": [metrics["equity"]]}, index=[now_str])

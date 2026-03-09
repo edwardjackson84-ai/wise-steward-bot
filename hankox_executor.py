@@ -522,7 +522,7 @@ def toggle_account():
     env_name = data.get("env_name")
     is_active = data.get("active")
     
-    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.forexcom"]:
+    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.forexcom", ".env.gatesdemo"]:
         toggle_path = os.path.join(script_dir, "toggles.json")
         toggles = {}
         if os.path.exists(toggle_path):
