@@ -1,0 +1,25 @@
+/Users/edwardjackson/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Starting Hanko X Webhook Executor...
+ * Serving Flask app 'hankox_executor'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5001
+ * Running on http://192.168.1.164:5001
+[33mPress CTRL+C to quit[0m
+\n--- Hanko X Webhook Signal ---\nReceived data: {'symbol': 'US30', 'action': 'buy', 'contracts': 0.01, 'sl': 38000, 'tp': 40000, 'bypass_sabbath': 'true', 'comment': 'Verification Test for Atlas Demo'}
+Visual Arbiter checking (stub)...
+Routing logic includes active account: .env.hankodemo
+Routing logic includes active account: .env.atlasdemo
+[DEBUG] raw_side="''" raw_action="'buy'" resolved_side=buy
+Multi-account execution results: Dispatched to background thread
+127.0.0.1 - - [08/Mar/2026 14:55:55] "POST /webhook HTTP/1.1" 200 -
+[.env.hankodemo] Authenticating via Hanko X Specific API...
+[.env.atlasdemo] Authenticating via TradeLocker REST...
+[.env.atlasdemo] REST Payload Dispatch: {"price": 0, "qty": 0.01, "side": "buy", "type": "market", "tradableInstrumentId": 16337, "routeId": 1402944, "stopLoss": 38000.0, "takeProfit": 40000.0}
+[.env.atlasdemo] REST Order Success: {"s":"error","errmsg":"Order cannot be created since order type is not allowed for current session."}
+[.env.hankodemo] WS Payload Dispatch: {"symbol": "US30.HKT", "quantity": 0.01, "side": 1, "stop": 38000.0, "limit": 40000.0, "trail": 0, "commentary": "Wise Steward Webhook", "tempOrderId": 1773006959429, "account_id": 207019}
+[.env.hankodemo] WS ORDER RESP: {"message":{"stat":"NOK","tempOrderId":1773006959429,"resp_msg":"Their is some problem placing your order"}}
+[.env.hankodemo] Global Routing Result: ✅ SUCCESS
+[.env.atlasdemo] Global Routing Result: ✅ SUCCESS

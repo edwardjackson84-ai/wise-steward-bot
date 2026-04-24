@@ -62,50 +62,28 @@ def get_active_configs():
             pass
 
     # Known account types/files
-    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.gatesdemo"]
+    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.gatesdemo", ".env.e8demo", ".env.e8tradelocker"]
     
     for env_name in env_files:
-        # 1. Load values from file if it exists
         env_path = os.path.join(script_dir, env_name)
-        file_vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
-        
-        # 2. Activation check: check toggles -> file -> os.environ -> default False
-        # We need to know which prefix to check for environment variables if the file is missing
-        # For Render, we often set ACCOUNT_ACTIVE_HANKODEMO or similar, but the current dashboard
-        # just sets ACCOUNT_ACTIVE inside the specific .env file.
-        # To make it robust on Render, we'll check if credentials exist.
-        
-        is_active = False
-        if env_name in toggles:
-            is_active = bool(toggles[env_name])
-        elif "ACCOUNT_ACTIVE" in file_vals:
-            is_active = file_vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
-        else:
-            # Fallback for Render: if matching credentials exist in os.environ, assume active
-            # unless explicitly disabled.
-            prefix = env_name.replace(".env.", "").upper()
-            if f"HANKOX_EMAIL_{prefix}" in os.environ or f"TRADELOCKER_EMAIL_{prefix}" in os.environ:
-                is_active = True
-            elif "hanko" in env_name.lower() and (os.environ.get("HANKOX_EMAIL") or os.environ.get("HANKOX_LIVE_ACCOUNT_ID")):
-                # Legacy check for the primary account
-                is_active = True
-        
-        if is_active:
-            print(f"Routing logic includes active account: {env_name}")
+        if not os.path.exists(env_path):
+            continue
             
-            # Helper to get val with priority: os.environ -> file_vals
-            def get_val(key):
-                # Try specific env var first (e.g. HANKOX_EMAIL_HANKODEMO)
-                prefix = env_name.replace(".env.", "").upper()
-                specific_key = f"{key}_{prefix}"
-                return os.environ.get(specific_key) or os.environ.get(key) or file_vals.get(key)
-
-            # Identify Broker Category
+        vals = dotenv_values(env_path)
+        
+        def get_val(key):
+            prefix = env_name.replace(".env.", "").upper()
+            return vals.get(f"{key}_{prefix}") or vals.get(key)
+            
+        is_active = get_val("ACCOUNT_ACTIVE")
+        if str(is_active).lower() == "true" or toggles.get(env_name) is True:
+            # Discover broker type
+            b_type = "unknown"
             if "hanko" in env_name.lower():
                 b_type = "hankotrade"
                 is_live = "live" in env_name.lower()
                 
-                email = get_val("HANKOX_EMAIL") or get_val("HANKOX_LIVE_ACCOUNT_ID") or get_val("HANKOX_DEMO_ACCOUNT_ID")
+                email = get_val("HANKOX_EMAIL") or get_val("HANKOX_LIVE_EMAIL") or get_val("HANKOX_DEMO_EMAIL")
                 password = get_val("HANKOX_PASSWORD") or get_val("HANKOX_LIVE_PASSWORD") or get_val("HANKOX_DEMO_PASSWORD")
                 
                 if email and password:
@@ -121,39 +99,63 @@ def get_active_configs():
                         "server": get_val("HANKOX_SERVER") or ("Hankotrade-Live" if is_live else "Hankotrade-Demo"),
                         "symbol_suffix": ".HKT"
                     })
-            elif "crucial" in env_name.lower() or "atlas" in env_name.lower() or "gates" in env_name.lower():
+            elif "crucial" in env_name.lower() or "atlas" in env_name.lower() or "gates" in env_name.lower() or "tradelocker" in env_name.lower():
                 b_type = "tradelocker"
                 is_live = "live" in env_name.lower()
                 api_url = get_val("TRADELOCKER_API_URL") or ("https://live.tradelocker.com/backend-api" if is_live else "https://demo.tradelocker.com/backend-api")
                 
                 email = get_val("TRADELOCKER_EMAIL")
                 password = get_val("TRADELOCKER_PASSWORD")
+                server = get_val("TRADELOCKER_SERVER")
                 
                 if email and password:
                     configs.append({
                         "name": env_name,
                         "type": b_type,
                         "is_live": is_live,
+                        "ws_url": None,
                         "api_url": api_url,
                         "email": email,
                         "password": password,
-                        "server": get_val("TRADELOCKER_SERVER"),
+                        "server": server,
                         "account_id": get_val("TRADELOCKER_ACCOUNT_ID"),
                         "symbol_suffix": "" 
+                    })
+            elif "e8" in env_name.lower():
+                # Match-Trader broker (E8 Markets)
+                email = file_vals.get("MT_EMAIL") or os.environ.get("MT_EMAIL")
+                password = file_vals.get("MT_PASSWORD") or os.environ.get("MT_PASSWORD")
+                if email and password:
+                    configs.append({
+                        "name": env_name,
+                        "type": "matchtrader",
+                        "is_live": "live" in env_name.lower(),
+                        "base_url": file_vals.get("MT_BASE_URL") or os.environ.get("MT_BASE_URL") or "https://mtr.e8markets.com",
+                        "email": email,
+                        "password": password,
+                        "server": file_vals.get("MT_SERVER") or "MatchTrader-Demo",
+                        "account_id": file_vals.get("MT_ACCOUNT_ID") or os.environ.get("MT_ACCOUNT_ID"),
+                        "symbol_suffix": ""
                     })
                 
     return configs
 
 def authenticate_tradelocker(config):
     """Authenticate with standard TradeLocker REST API."""
-    auth_url = f"{config['api_url']}/auth/jwt/token"
+    env_name = config["name"]
+    email = config["email"]
+    password = config["password"]
+    api_url = config["api_url"]
+    server = config.get("server")
+    
+    auth_url = f"{api_url}/auth/jwt/token"
     payload = {
-        "email": config["email"],
-        "password": config["password"],
-        "server": config["server"]
+        "email": email,
+        "password": password,
+        "server": server
     }
     
-    print(f"[{config['name']}] Authenticating via TradeLocker REST...")
+    print(f"[{env_name}] Authenticating via TradeLocker REST... URL: {auth_url}")
     resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
     if not resp.ok:
         raise Exception(f"TradeLocker Auth failed: {resp.text}")
@@ -243,7 +245,7 @@ def is_session_active(symbol):
 
     return False
 
-async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name, sl=0, tp=0):
+async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name, sl=0, tp=0, **kwargs):
     """Executes a trade instruction directly over the TradeLocker REST API."""
     side_lower = side.lower()
     side_tl = "buy" if side_lower in ("buy", "long") else "sell"
@@ -257,6 +259,9 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     # Symbol mapping logic for Indices/Forex
     base_symbol = symbol.upper().replace(".HKT", "")
     mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
+    
+    if "e8" in env_name.lower() and not mapped_symbol.endswith("+"):
+        mapped_symbol += "+"
     
     # We attempt to find the ID via a quick search or use a baked-in map for Crucial
     # (Based on standard Crucial/Tradelocker IDs)
@@ -285,6 +290,12 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         ".env.gatesdemo": {
             "U30USD": 13638, "U100USD": 13645, "U500USD": 13644,
             "EURUSD": 13439, "GBPUSD": 13443, "XAUUSD": 13676
+        },
+        ".env.e8tradelocker": {
+            "U30USD": 17028, "U100USD": 17035, "U500USD": 17034,
+            "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
+            "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
+            "BTCUSD": 17949
         }
     }
     
@@ -311,6 +322,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     for r in routes:
                         if r.get("type") == "TRADE":
                             route_id = r.get("id")
+                            inst_id = inst.get("tradableInstrumentId")
                             break
                     if route_id: break
     except Exception as e:
@@ -324,11 +336,32 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         "qty": float(qty),
         "side": side_tl,
         "type": "market",
+        "validity": "IOC",
         "tradableInstrumentId": inst_id if inst_id else mapped_symbol,
         "routeId": route_id,
         "stopLoss": float(sl) if sl else None,
         "takeProfit": float(tp) if tp else None
     }
+    
+    stop_loss_type = kwargs.get("stopLossType")
+    if stop_loss_type:
+        payload["stopLossType"] = stop_loss_type
+        
+    take_profit_type = kwargs.get("takeProfitType")
+    if take_profit_type:
+        payload["takeProfitType"] = take_profit_type
+    
+    trail_trigger = kwargs.get("trailTrigger")
+    if trail_trigger is not None:
+        payload["trailTrigger"] = float(trail_trigger)
+        
+    trail_step = kwargs.get("trailStep")
+    if trail_step is not None:
+        payload["trailStep"] = float(trail_step)
+        
+    tr_stop_offset = kwargs.get("trStopOffset")
+    if tr_stop_offset is not None:
+        payload["trStopOffset"] = float(tr_stop_offset)
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -464,7 +497,7 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, 
         print(f"[{env_name}] WebSocket Error: {e}")
         return False
 
-async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0):
+async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0, **kwargs):
     """Concurrent execution across multi-broker landscape."""
     tasks = []
     
@@ -481,10 +514,16 @@ async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0
                 token, acc_id = authenticate_hankotrade(config)
                 # 2. Hanko uses WS dispatch
                 task = asyncio.create_task(execute_trade_ws(token, acc_id, symbol, side, qty, config["ws_url"], config["name"], sl, tp))
+            elif config["type"] == "matchtrader":
+                # 3. Match-Trader uses its own REST executor (synchronous, wrapped in a coroutine)
+                async def _mt_task(cfg=config):
+                    from matchtrader_executor import place_order_matchtrader
+                    return place_order_matchtrader(cfg, symbol, side, qty, sl, tp)
+                task = asyncio.create_task(_mt_task())
             else:
                 token, acc_id, acc_num = authenticate_tradelocker(config)
                 # 2. TradeLocker uses REST dispatch
-                task = asyncio.create_task(execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, config["api_url"], config["name"], sl, tp))
+                task = asyncio.create_task(execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, config["api_url"], config["name"], sl, tp, **kwargs))
                 
             tasks.append({"env": config["name"], "task": task})
         except Exception as e:
@@ -503,7 +542,7 @@ async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0
         
     return results
 
-def place_market_orders_sync(active_configs, symbol, side, qty, sl=0, tp=0):
+def place_market_orders_sync(active_configs, symbol, side, qty, sl=0, tp=0, **kwargs):
     """Synchronous wrapper to deploy orders async in a background thread."""
     import threading
     # Guard: cap concurrent trade threads to avoid memory exhaustion on Render
@@ -516,7 +555,7 @@ def place_market_orders_sync(active_configs, symbol, side, qty, sl=0, tp=0):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                loop.run_until_complete(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp))
+                loop.run_until_complete(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp, **kwargs))
             finally:
                 loop.close()
             
@@ -535,7 +574,7 @@ def toggle_account():
     env_name = data.get("env_name")
     is_active = data.get("active")
     
-    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.forexcom", ".env.gatesdemo"]:
+    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.forexcom", ".env.gatesdemo", ".env.e8demo"]:
         toggle_path = os.path.join(script_dir, "toggles.json")
         toggles = {}
         if os.path.exists(toggle_path):
@@ -561,7 +600,7 @@ def webhook():
             data = request.get_json(force=True) if request.content_type == 'text/plain' else request.json
             print(f"\\n--- Hanko X Webhook Signal ---\\nReceived data: {data}")
             
-            symbol = data.get("symbol", "UNKNOWN")
+            symbol = data.get("symbol") or data.get("ticker", "UNKNOWN")
             action = data.get("action", "").lower()
 
             # 0. Sabbath Mode Check
@@ -646,10 +685,21 @@ def webhook():
                         side = "buy"  # safe fallback
 
                     print(f"[DEBUG] raw_side={repr(raw_side)!r} raw_action={repr(raw_action)!r} resolved_side={side}")
-                    sl = data.get("sl", 0)
-                    tp = data.get("tp", 0)
+                    sl = data.get("sl") or data.get("stopLoss", 0)
+                    tp = data.get("tp") or data.get("takeProfit", 0)
                     
-                    results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp)
+                    kwargs = {}
+                    if "stopLossType" in data: 
+                        sl_type = data["stopLossType"]
+                        if sl_type == "trailing_stop":
+                            sl_type = "offset"
+                        kwargs["stopLossType"] = sl_type
+                    if "trailTrigger" in data: kwargs["trailTrigger"] = data["trailTrigger"]
+                    if "trailStep" in data: kwargs["trailStep"] = data["trailStep"]
+                    if "trStopOffset" in data: kwargs["trStopOffset"] = data["trStopOffset"]
+                    if "takeProfitType" in data: kwargs["takeProfitType"] = data["takeProfitType"]
+                    
+                    results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp, **kwargs)
                     print(f"Multi-account execution results: {results}")
                 else:
                     print(f"Unknown action '{action}' — ignoring.")

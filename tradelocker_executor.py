@@ -50,10 +50,10 @@ def is_session_active(symbol):
         
     allowed_sessions = [s.strip() for s in sessions_env_val.split(",")]
     
-    # Asian Session: 23:00 - 08:00 UTC
+    # Asian Session: 22:00 - 08:00 UTC
     # London Session: 07:00 - 16:00 UTC
     # New York Session: 13:00 - 22:00 UTC
-    is_asian = (hour_utc >= 23 or hour_utc < 8)
+    is_asian = (hour_utc >= 22 or hour_utc < 8)
     is_london = (7 <= hour_utc < 16)
     is_new_york = (13 <= hour_utc < 22)
     
@@ -372,6 +372,12 @@ def handle_webhook():
         
         # Action logic decoding
         action = data.get("action", "").lower()
+        symbol = data.get("symbol", "UNKNOWN")
+        
+        # Filter out non-trade actions (signals are journal-only)
+        if action == "signal":
+            print(f"Signal alert received for {symbol}. Logging only — no trade execution.")
+            return jsonify({"status": "logged", "message": f"Signal for {symbol} recorded"}), 200
         
         # Check if this is an exit order (e.g., "close_long", "close_short")
         if action in ["close_long", "close_short"]:
@@ -379,8 +385,7 @@ def handle_webhook():
             close_position(token, account_id, acc_num, data, target_side)
             
         # Check if it's an entry order (e.g., "buy", "sell", "entry")
-        else:
-            symbol = data.get("symbol", "UNKNOWN")
+        elif action in ("buy", "sell", "long", "short", "entry"):
             
             # === SESSION FILTER PIPELINE ===
             if symbol != "UNKNOWN" and not is_session_active(symbol):
@@ -389,7 +394,6 @@ def handle_webhook():
             # === VISUAL ARBITER PIPELINE ===
             enable_vision = str(os.environ.get("ENABLE_VISUAL_ARBITER", "false")).lower() == "true"
             if enable_vision:
-                symbol = data.get("symbol", "UNKNOWN")
                 timeframe = str(data.get("timeframe", "60"))
                 strategy = data.get("strategy", "Unknown Strategy")
                 
@@ -421,6 +425,9 @@ def handle_webhook():
             # ===============================
 
             place_order(token, account_id, acc_num, data)
+        else:
+            print(f"Unknown action '{action}' — ignoring.")
+            return jsonify({"status": "ignored", "reason": f"Unknown action: {action}"}), 200
             
         return jsonify({"status": "success", "message": "Trade processed"}), 200
         

@@ -1,12 +1,45 @@
 //@version=6
 indicator('Wise Steward Master System', overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
+// ============================================================================
+// GLOBAL: MASTER ALIGNMENT FILTER
+// ============================================================================
+grp_master = "Master Alignment Filter"
+useMasterFilter = input.bool(true, "Require Master Alignment (+3/-3) for ALL Alerts", group=grp_master)
+useSmaFilter    = input.bool(true, "Require SMA Alignment (20/30/60) for ALL Alerts", group=grp_master)
+
+grp_ma = "MTF Moving Average Settings"
+ma_fast_len = input.int(10, "Fast EMA Length", group=grp_ma)
+ma_slow_len = input.int(50, "Slow EMA Length", group=grp_ma)
+
+grp_tf = "Timeframe Selection"
+tf1 = input.timeframe("60", "Timeframe 1 (1H)", group=grp_tf)
+tf2 = input.timeframe("240", "Timeframe 2 (4H)", group=grp_tf)
+tf3 = input.timeframe("480", "Timeframe 3 (8H)", group=grp_tf)
+
+get_htf_trend(tf, fast_len, slow_len) =>
+    fast_ema = request.security(syminfo.tickerid, tf, ta.ema(close, fast_len))
+    slow_ema = request.security(syminfo.tickerid, tf, ta.ema(close, slow_len))
+    trend_dir = fast_ema > slow_ema ? 1 : fast_ema < slow_ema ? -1 : 0
+    trend_dir
+
+trend_1 = get_htf_trend(tf1, ma_fast_len, ma_slow_len)
+trend_2 = get_htf_trend(tf2, ma_fast_len, ma_slow_len)
+trend_3 = get_htf_trend(tf3, ma_fast_len, ma_slow_len)
+
+// HTF Alignment Score (-3 to +3)
+utf_confluence = trend_1 + trend_2 + trend_3
+
+master_buy_ok  = useMasterFilter ? (utf_confluence == 3) : true
+master_sell_ok = useMasterFilter ? (utf_confluence == -3) : true
+
 // ======================================================================
 // MODULE: first_20_min_strategy.pine
 // ======================================================================
 
 // --- Inputs ---
 sma20Length = input.int(20, "SMA 20 Length")
+sma30Length = input.int(30, "SMA 30 Length")
 sma60Length = input.int(60, "SMA 60 Length")
 sma200Length = input.int(200, "SMA 200 Length")
 elephantMultiplier = input.float(1.5, "Elephant Bar Multiplier (Size vs Avg)", minval=1.0)
@@ -16,9 +49,15 @@ useSMACrossExit = input.bool(true, "Use 20/60 SMA Cross as Exit")
 
 // --- Moving Averages ---
 sma20 = ta.sma(close, sma20Length)
+sma30 = ta.sma(close, sma30Length)
 sma60 = ta.sma(close, sma60Length)
 sma200 = ta.sma(close, sma200Length)
+
+sma_buy_ok  = useSmaFilter ? (sma20 > sma30 and close > sma60) : true
+sma_sell_ok = useSmaFilter ? (sma20 < sma30 and close < sma60) : true
+
 plot(sma20, color=color.blue, title="SMA 20 (Short)", linewidth=2)
+plot(sma30, color=color.yellow, title="SMA 30 (Medium-Short)", linewidth=2)
 plot(sma60, color=color.orange, title="SMA 60 (Medium)", linewidth=2)
 plot(sma200, color=color.gray, title="SMA 200 (Long)", linewidth=2)
 
@@ -57,14 +96,14 @@ float shortStopLoss = high[1]
 // --- Elephant Retest 20 SMA ---
 bullElephantRetest = not isWide and isElephant and (close > open) and (low <= sma20) and (close > sma20)
 bearElephantRetest = not isWide and isElephant and (close < open) and (high >= sma20) and (close < sma20)
-if bullElephantRetest and timeframe.period == "3"
+if master_buy_ok and sma_buy_ok and bullElephantRetest and timeframe.period == "3"
     alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(longStopLoss) + '", "tp": "' + str.tostring(close + (close - longStopLoss) * 2) + '", "signal": "elephant_buy"}', alert.freq_once_per_bar_close)
-if bearElephantRetest and timeframe.period == "3"
+if master_sell_ok and sma_sell_ok and bearElephantRetest and timeframe.period == "3"
     alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(shortStopLoss) + '", "tp": "' + str.tostring(close - (shortStopLoss - close) * 2) + '", "signal": "elephant_sell"}', alert.freq_once_per_bar_close)
 
 // --- Entry Signals ---
-ov_longCondition = not isWide and not isNewDay and not na(firstBarHigh) and ta.crossover(high, firstBarHigh) and setupValid and close > sma20
-ov_shortCondition = not isWide and not isNewDay and not na(firstBarLow) and ta.crossunder(low, firstBarLow) and setupValid and close < sma20
+ov_longCondition = master_buy_ok and sma_buy_ok and not isWide and not isNewDay and not na(firstBarHigh) and ta.crossover(high, firstBarHigh) and setupValid and close > sma20
+ov_shortCondition = master_sell_ok and sma_sell_ok and not isWide and not isNewDay and not na(firstBarLow) and ta.crossunder(low, firstBarLow) and setupValid and close < sma20
 
 // --- Mean Reversion (Wide State) ---
 isBottomingTail = (math.min(open, close) - low) > math.abs(open - close) * 1.5 and (high - math.max(open, close)) < math.abs(open - close)
@@ -73,10 +112,10 @@ isToppingTail = (high - math.max(open, close)) > math.abs(open - close) * 1.5 an
 meanRevLong = wideBelow and ( (isElephant and close > open) or isBottomingTail )
 meanRevShort = wideAbove and ( (isElephant and close < open) or isToppingTail )
 
-if meanRevLong and timeframe.period == "3"
+if master_buy_ok and sma_buy_ok and meanRevLong and timeframe.period == "3"
     alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(low - ta.atr(14)) + '", "tp": "' + str.tostring(sma20) + '", "signal": "mean_reversion_buy"}', alert.freq_once_per_bar_close)
 
-if meanRevShort and timeframe.period == "3"
+if master_sell_ok and sma_sell_ok and meanRevShort and timeframe.period == "3"
     alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(high + ta.atr(14)) + '", "tp": "' + str.tostring(sma20) + '", "signal": "mean_reversion_sell"}', alert.freq_once_per_bar_close)
 
 // --- ATR Trailing Stop Logic ---
@@ -808,8 +847,8 @@ canEnter = na(lastEntryBar) or bar_index - lastEntryBar > entryBufferBars
 
 kd_longRaw  = close < vwap and adx > adxEntry and volFilter and timeFilter and canEnter
 kd_shortRaw = close > vwap and adx > adxEntry and volFilter and timeFilter and canEnter
-kd_longCondition  = requireConfl ? (kd_longRaw  and structureBull) : kd_longRaw
-kd_shortCondition = requireConfl ? (kd_shortRaw and structureBear) : kd_shortRaw
+kd_longCondition  = master_buy_ok and sma_buy_ok and (requireConfl ? (kd_longRaw  and structureBull) : kd_longRaw)
+kd_shortCondition = master_sell_ok and sma_sell_ok and (requireConfl ? (kd_shortRaw and structureBear) : kd_shortRaw)
 
 // Exits (for alerts context) — now using separate multipliers
 longTP = close + kd_atr * atrMultTP
@@ -959,27 +998,8 @@ plot(hma, "HMA", cp_TColor, linewidth = 3)
 // ============================================================================
 // PART 2: WISE STEWARD MTF TREND FORECASTER DASHBOARD
 // ============================================================================
-grp_ma = "MTF Moving Average Settings"
-ma_fast_len = input.int(10, "Fast EMA Length", group=grp_ma)
-ma_slow_len = input.int(50, "Slow EMA Length", group=grp_ma)
 
-grp_tf = "Timeframe Selection"
-tf1 = input.timeframe("60", "Timeframe 1 (1H)", group=grp_tf)
-tf2 = input.timeframe("240", "Timeframe 2 (4H)", group=grp_tf)
-tf3 = input.timeframe("480", "Timeframe 3 (8H)", group=grp_tf)
-
-get_htf_trend(tf, fast_len, slow_len) =>
-    fast_ema = request.security(syminfo.tickerid, tf, ta.ema(close, fast_len))
-    slow_ema = request.security(syminfo.tickerid, tf, ta.ema(close, slow_len))
-    trend_dir = fast_ema > slow_ema ? 1 : fast_ema < slow_ema ? -1 : 0
-    trend_dir
-
-trend_1 = get_htf_trend(tf1, ma_fast_len, ma_slow_len)
-trend_2 = get_htf_trend(tf2, ma_fast_len, ma_slow_len)
-trend_3 = get_htf_trend(tf3, ma_fast_len, ma_slow_len)
-
-// HTF Alignment Score (-3 to +3)
-utf_confluence = trend_1 + trend_2 + trend_3
+// Dashboard Drawing
 
 // Dashboard Drawing
 var table dash = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
@@ -1054,8 +1074,8 @@ f_isPriceInFVG(_boxes, _price) =>
                 break
     inFVG
 
-fvg_buy_confluence = bullishSweep and (f_isPriceInFVG(bullBoxes, close) or f_isPriceInFVG(bullBoxes, low))
-fvg_sell_confluence = bearishSweep and (f_isPriceInFVG(bearBoxes, close) or f_isPriceInFVG(bearBoxes, high))
+fvg_buy_confluence = master_buy_ok and sma_buy_ok and bullishSweep and (f_isPriceInFVG(bullBoxes, close) or f_isPriceInFVG(bullBoxes, low))
+fvg_sell_confluence = master_sell_ok and sma_sell_ok and bearishSweep and (f_isPriceInFVG(bearBoxes, close) or f_isPriceInFVG(bearBoxes, high))
 
 plotshape(fvg_buy_confluence, title="FVG + Sweep Buy", text="FVG\nSWEEP", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.white, size=size.large)
 plotshape(fvg_sell_confluence, title="FVG + Sweep Sell", text="FVG\nSWEEP", style=shape.triangledown, location=location.abovebar, color=color.new(color.fuchsia, 0), textcolor=color.white, size=size.large)

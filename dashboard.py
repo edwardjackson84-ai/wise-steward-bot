@@ -208,7 +208,9 @@ broker_options = {
     "Crucial Markets Demo": ".env.crucialdemo",
     "Crucial Markets Live": ".env.cruciallive",
     "Atlas Demo": ".env.atlasdemo",
-    "GatesFX Demo": ".env.gatesdemo"
+    "GatesFX Demo": ".env.gatesdemo",
+    "E8 Markets Match-Trader": ".env.e8demo",
+    "E8 Markets TradeLocker": ".env.e8tradelocker"
 }
 selected_broker_name = st.sidebar.selectbox("Select Account to Edit Risk", list(broker_options.keys()))
 env_file = os.path.join(BASE_DIR, broker_options[selected_broker_name])
@@ -218,7 +220,8 @@ if os.path.exists(env_file):
     # Clear "pollen" from previous broker selections to ensure isolation
     clearing_vars = [
         "HANKOX_EMAIL", "HANKOX_PASSWORD", "HANKOX_SERVER", "HANKOX_DEMO_ACCOUNT_ID", "HANKOX_LIVE_ACCOUNT_ID",
-        "TRADELOCKER_EMAIL", "TRADELOCKER_PASSWORD", "TRADELOCKER_SERVER", "TRADELOCKER_ACCOUNT_ID", "TRADELOCKER_API_URL"
+        "TRADELOCKER_EMAIL", "TRADELOCKER_PASSWORD", "TRADELOCKER_SERVER", "TRADELOCKER_ACCOUNT_ID", "TRADELOCKER_API_URL",
+        "MT_EMAIL", "MT_PASSWORD", "MT_SERVER", "MT_ACCOUNT_ID", "MT_BASE_URL"
     ]
     for v in clearing_vars:
         os.environ.pop(v, None)
@@ -529,8 +532,47 @@ def fetch_account_metrics(broker_name, env_name=None):
             except:
                 pass
         return None
-        
-    # 2. TradeLocker logic for Crucial Markets / Atlas / others
+
+    # 2. Match-Trader logic (E8 Markets)
+    if "Match-Trader" in broker_name or ("E8" in broker_name and "TradeLocker" not in broker_name):
+        try:
+            from matchtrader_executor import load_e8_config, authenticate_matchtrader
+            # We use the env_name to load the correct config
+            config = load_e8_config(env_name)
+            trading_api_token, system_uuid, trading_account_token = authenticate_matchtrader(config)
+            
+            base_url = config["base_url"].rstrip("/")
+            url = f"{base_url}/mtr-api/{system_uuid}/open-positions" # We'll just fetch accounts for balance
+            
+            # Re-auth or similar to get account info
+            # Usually Match-Trader login returns account details. 
+            # For simplicity, we can re-run login to get the latest balance if not cached,
+            # or we can add a specific balance call.
+            # Match-Trader standard: /manager/co-login returns accounts list with balances.
+            
+            login_url = f"{base_url}/manager/co-login"
+            payload = {"email": config["email"], "password": config["password"]}
+            resp = requests.post(login_url, json=payload, timeout=8)
+            if resp.ok:
+                data = resp.json()
+                accounts = data.get("accounts", [])
+                target_id = str(config.get("account_id"))
+                for acc in accounts:
+                    if str(acc.get("accountNumber")) == target_id or str(acc.get("id")) == target_id:
+                        balance = float(acc.get("balance", 0))
+                        equity = float(acc.get("equity", balance))
+                        return {
+                            "balance": balance,
+                            "equity": equity,
+                            "server": config["server"],
+                            "account_id": acc.get("accountNumber")
+                        }
+        except Exception:
+            # Silently fail to avoid BrokenPipeError on stdout
+            pass
+        return None
+
+    # 3. TradeLocker logic for Crucial Markets / Atlas / others
     target_id = get_val("TRADELOCKER_ACCOUNT_ID", env_name)
     token, api_url = get_auth_token(env_name)
     if not token or not target_id:
