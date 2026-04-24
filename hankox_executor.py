@@ -331,6 +331,16 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     # GatesFX Route ID (from discovery)
     route_id = 1482858 if ".env.gates" in env_name else route_id
     
+    # TradeLocker uses points (ticks) for offsets. 1 pip = 10 points.
+    # We multiply by 10 if the incoming value is likely in pips (e.g. <= 150).
+    # This prevents double-multiplying if the PineScript is already sending points (e.g. 200).
+    def to_points(val):
+        if not val: return None
+        v = float(val)
+        return v * 10 if v < 1000 else v # If user sends 20, becomes 200. If 200, becomes 2000... wait, let's just strictly multiply by 10, but allow a webhook override.
+        
+    multiplier = kwargs.get("pointMultiplier", 10)
+    
     payload = {
         "price": 0, # market
         "qty": float(qty),
@@ -339,8 +349,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         "validity": "IOC",
         "tradableInstrumentId": inst_id if inst_id else mapped_symbol,
         "routeId": route_id,
-        "stopLoss": float(sl) if sl else None,
-        "takeProfit": float(tp) if tp else None
+        "stopLoss": float(sl) * multiplier if sl else None,
+        "takeProfit": float(tp) * multiplier if tp else None
     }
     
     stop_loss_type = kwargs.get("stopLossType")
@@ -350,18 +360,20 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     take_profit_type = kwargs.get("takeProfitType")
     if take_profit_type:
         payload["takeProfitType"] = take_profit_type
+    elif tp and stop_loss_type in ("offset", "trailing_stop"):
+        payload["takeProfitType"] = "offset"
     
     trail_trigger = kwargs.get("trailTrigger")
     if trail_trigger is not None:
-        payload["trailTrigger"] = float(trail_trigger)
+        payload["trailTrigger"] = float(trail_trigger) * multiplier
         
     trail_step = kwargs.get("trailStep")
     if trail_step is not None:
-        payload["trailStep"] = float(trail_step)
+        payload["trailStep"] = float(trail_step) * multiplier
         
     tr_stop_offset = kwargs.get("trStopOffset")
     if tr_stop_offset is not None:
-        payload["trStopOffset"] = float(tr_stop_offset)
+        payload["trStopOffset"] = float(tr_stop_offset) * multiplier
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -698,6 +710,12 @@ def webhook():
                     if "trailStep" in data: kwargs["trailStep"] = data["trailStep"]
                     if "trStopOffset" in data: kwargs["trStopOffset"] = data["trStopOffset"]
                     if "takeProfitType" in data: kwargs["takeProfitType"] = data["takeProfitType"]
+                    
+                    # Dynamically determine multiplier based on whether user is sending pips or points
+                    # If sl <= 150, assume it's Pips and needs x10 conversion for TradeLocker.
+                    # If it's already > 150 (like 200 points), assume they already converted it.
+                    sl_val = float(sl) if sl else 0
+                    kwargs["pointMultiplier"] = 10 if 0 < sl_val <= 150 else 1
                     
                     results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp, **kwargs)
                     print(f"Multi-account execution results: {results}")
