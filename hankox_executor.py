@@ -23,9 +23,10 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 def send_telegram(message: str) -> None:
     """Fire-and-forget Telegram notification. Never blocks or breaks the trade flow."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in environment.")
         return
     try:
-        requests.post(
+        resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": TELEGRAM_CHAT_ID,
@@ -35,6 +36,8 @@ def send_telegram(message: str) -> None:
             },
             timeout=5,
         )
+        if not resp.ok:
+            print(f"Telegram notification failed (non-fatal): HTTP {resp.status_code} - {resp.text}")
     except Exception as e:
         print(f"Telegram notification failed (non-fatal): {e}")
 
