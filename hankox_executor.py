@@ -17,6 +17,27 @@ if os.path.exists(env_path):
 
 app = Flask(__name__)
 
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+def send_telegram(message: str) -> None:
+    """Fire-and-forget Telegram notification. Never blocks or breaks the trade flow."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"Telegram notification failed (non-fatal): {e}")
+
 SYMBOL_MAP = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
@@ -615,10 +636,18 @@ def webhook():
             symbol = data.get("symbol") or data.get("ticker", "UNKNOWN")
             action = data.get("action", "").lower()
 
+            send_telegram(
+                f"*[Wise Steward] Signal Received*\n"
+                f"{symbol} {action.upper()} qty={data.get('qty', data.get('contracts', '?'))}\n"
+                f"SL: {data.get('stopLoss', '-')}  TP: {data.get('takeProfit', '-')}\n"
+                f"_{data.get('comment', '')}_"
+            )
+
             # 0. Sabbath Mode Check
             bypass_sabbath = str(data.get("bypass_sabbath", "false")).lower() == "true"
             if is_sabbath_mode_active() and not bypass_sabbath:
                 print(f"Rejecting trade signal for {symbol}: Sabbath Mode Active.")
+                send_telegram(f"*[Wise Steward] Rejected*\n{symbol} {action.upper()}\nReason: Sabbath Mode Active")
                 return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
             
             # 1. Session Filter — only applies to entry actions, not close/signal
@@ -627,6 +656,7 @@ def webhook():
             if not skip_session_check and symbol != "UNKNOWN":
                 if not is_session_active(symbol):
                     print(f"Rejecting trade signal for {symbol}: Outside allowed sessions.")
+                    send_telegram(f"*[Wise Steward] Rejected*\n{symbol} {action.upper()}\nReason: Outside allowed sessions")
                     return jsonify({"status": "rejected", "reason": "Session Closed"}), 200
 
             # 2. Filter out non-trade actions (signals are journal-only)
@@ -644,6 +674,7 @@ def webhook():
                 active_configs = get_active_configs()
                 if not active_configs:
                     print("Notice: Signal received but no accounts are toggled active.")
+                    send_telegram(f"*[Wise Steward] Rejected*\n{symbol} {action.upper()}\nReason: No active accounts toggled on")
                     return jsonify({"status": "ignored", "reason": "No active accounts"}), 200
                 
                 # Handling order logic
@@ -726,11 +757,13 @@ def webhook():
             except Exception as e:
                 import sys
                 print(f"Execution Pipeline Error: {e}", file=sys.stderr)
+                send_telegram(f"*[Wise Steward] EXECUTION ERROR*\n{symbol} {action.upper()}\nError: {str(e)[:200]}")
                 return jsonify({"status": "error", "message": str(e)}), 500
                 
             return jsonify({"status": "success", "message": "Signal processed"}), 200
             
         except Exception as e:
+            send_telegram(f"*[Wise Steward] WEBHOOK ERROR*\nError: {str(e)[:200]}")
             return jsonify({"status": "error", "message": str(e)}), 400
     else:
         return jsonify({"status": "error", "message": "Unsupported Media Type"}), 415
