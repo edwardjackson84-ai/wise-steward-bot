@@ -362,10 +362,18 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         return v * 10 if v < 1000 else v # If user sends 20, becomes 200. If 200, becomes 2000... wait, let's just strictly multiply by 10, but allow a webhook override.
         
     multiplier = kwargs.get("pointMultiplier", 10)
+    final_qty = float(qty)
+    
+    # --- E8 Markets Custom Scaling ---
+    # E8 requires 100x larger point values and 5x smaller lot sizes for US30 to match Atlas
+    if "e8" in env_name.lower() and base_symbol in ("US30", "DJI", "DOW+"):
+        multiplier *= 100
+        final_qty = final_qty * 0.2
+        print(f"[{env_name}] E8 Scaling Applied: Qty={qty}->{final_qty}, PointMult={multiplier}")
     
     payload = {
         "price": 0, # market
-        "qty": float(qty),
+        "qty": final_qty,
         "side": side_tl,
         "type": "market",
         "validity": "IOC",
