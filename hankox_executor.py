@@ -316,10 +316,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
             "EURUSD": 13439, "GBPUSD": 13443, "XAUUSD": 13676
         },
         ".env.e8tradelocker": {
-            "U30USD": 17028, "U100USD": 17035, "U500USD": 17034,
-            "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
-            "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
-            "BTCUSD": 17949
+            "U30USD+": 6107, "U100USD+": 6104, "U500USD+": 6106,
+            "XAUUSD+": 6102, "XAGUSD+": 6101
         }
     }
     
