@@ -288,6 +288,31 @@ async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name
     current_map = INSTRUMENT_ID_MAP.get(env_name, INSTRUMENT_ID_MAP[".env.crucialdemo"])
     inst_id = current_map.get(mapped_symbol)
 
+    acc_num = "1" if "e8" in env_name.lower() else str(acc_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "accNum": acc_num
+    }
+
+    route_id = None
+    inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
+    inst_resp = requests.get(inst_url, headers=headers)
+    if inst_resp.ok:
+        data = inst_resp.json()
+        inst_list = data.get("d", []) if isinstance(data, dict) else data
+        if isinstance(inst_list, dict) and "instruments" in inst_list:
+            inst_list = inst_list["instruments"]
+        for inst in inst_list:
+            if str(inst.get("tradableInstrumentId")) == str(inst_id) or str(inst.get("name")) == mapped_symbol:
+                routes = inst.get("routes", [])
+                for r in routes:
+                    if r.get("type") == "TRADE":
+                        route_id = r.get("id")
+                        break
+                if route_id:
+                    break
+
     order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
     payload = {
         "price": 0,
@@ -298,11 +323,8 @@ async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name
         "stopLoss": float(sl) if sl else None,
         "takeProfit": float(tp) if tp else None
     }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "accNum": "1" if "e8" in env_name.lower() else str(acc_id)
-    }
+    if route_id:
+        payload["routeId"] = route_id
 
     print(f"[{env_name}] REST Open Order Payload: {json.dumps(payload)}")
     resp = requests.post(order_url, json=payload, headers=headers)
