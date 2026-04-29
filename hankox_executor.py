@@ -135,7 +135,7 @@ def get_active_configs():
         except Exception:
             pass
 
-    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.e8demo", ".env.e8live", ".env.e8markets"]
+    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.e8demo", ".env.e8live", ".env.e8markets", ".env.e8tradelocker"]
 
     for env_name in env_files:
         ep = os.path.join(script_dir, env_name)
@@ -264,6 +264,9 @@ INSTRUMENT_ID_MAP = {
         "US30": 6107
     },
     ".env.e8markets": {
+        "US30": 6107
+    },
+    ".env.e8tradelocker": {
         "US30": 6107
     }
 }
@@ -728,7 +731,7 @@ def toggle_account():
     is_active = data.get("active")
     valid_envs = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo",
                   ".env.cruciallive", ".env.atlasdemo", ".env.forexcom",
-                  ".env.e8demo", ".env.e8live", ".env.e8markets"]
+                  ".env.e8demo", ".env.e8live", ".env.e8markets", ".env.e8tradelocker"]
     if env_name and env_name in valid_envs:
         toggle_path = os.path.join(script_dir, "toggles.json")
         toggles = {}
