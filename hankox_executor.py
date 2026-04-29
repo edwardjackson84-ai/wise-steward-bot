@@ -319,6 +319,9 @@ async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name
         "qty": float(qty),
         "side": side_tl,
         "type": "market",
+        "validity": "IOC",
+        "stopLossType": "absolute",
+        "takeProfitType": "absolute",
         "tradableInstrumentId": inst_id if inst_id else mapped_symbol,
         "stopLoss": float(sl) if sl else None,
         "takeProfit": float(tp) if tp else None
