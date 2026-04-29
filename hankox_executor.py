@@ -33,6 +33,8 @@ SYMBOL_MAP = {
     "BTCUSD": "BTCUSD"
 }
 
+_ROUTE_CACHE = {}
+
 # ======================================================================
 # TRADE REGISTRY
 # ======================================================================
@@ -179,6 +181,7 @@ def get_active_configs():
                 "password": vals.get("TRADELOCKER_PASSWORD"),
                 "server": vals.get("TRADELOCKER_SERVER"),
                 "account_id": vals.get("TRADELOCKER_ACCOUNT_ID"),
+                "acc_num": vals.get("TRADELOCKER_ACCNUM", "1" if "e8" in env_name.lower() else vals.get("TRADELOCKER_ACCOUNT_ID")),
                 "symbol_suffix": ""
             })
 
@@ -211,7 +214,7 @@ def authenticate_tradelocker(config):
             accounts = acc_resp.json().get("accounts", [])
             if accounts:
                 acc_id = accounts[0].get("id")
-    return token, acc_id
+    return token, acc_id, config.get("acc_num", "1")
 
 def authenticate_hankotrade(config):
     login_data = {
@@ -273,10 +276,8 @@ INSTRUMENT_ID_MAP = {
 
 # ======================================================================
 # TRADELOCKER REST — OPEN A TRADE
-# ======================================================================
-
-async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name,
-                              sl=0, tp=0, trade_id=None):
+# ======================================================================async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name,
+                              sl=0, tp=0, trade_id=None, sl_type="offset", tp_type="offset"):
     """
     Places a market order via TradeLocker REST.
     Returns the broker_order_id string on success, None on failure.
@@ -288,30 +289,35 @@ async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name
     current_map = INSTRUMENT_ID_MAP.get(env_name, INSTRUMENT_ID_MAP[".env.crucialdemo"])
     inst_id = current_map.get(mapped_symbol)
 
-    acc_num = "1" if "e8" in env_name.lower() else str(acc_id)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "accNum": acc_num
+        "accNum": str(acc_num)
     }
 
     route_id = None
-    inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
-    inst_resp = requests.get(inst_url, headers=headers)
-    if inst_resp.ok:
-        data = inst_resp.json()
-        inst_list = data.get("d", []) if isinstance(data, dict) else data
-        if isinstance(inst_list, dict) and "instruments" in inst_list:
-            inst_list = inst_list["instruments"]
-        for inst in inst_list:
-            if str(inst.get("tradableInstrumentId")) == str(inst_id) or str(inst.get("name")) == mapped_symbol:
-                routes = inst.get("routes", [])
-                for r in routes:
-                    if r.get("type") == "TRADE":
-                        route_id = r.get("id")
+    route_cache_key = f"{env_name}_{inst_id}"
+
+    if route_cache_key in _ROUTE_CACHE:
+        route_id = _ROUTE_CACHE[route_cache_key]
+    else:
+        inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
+        inst_resp = requests.get(inst_url, headers=headers)
+        if inst_resp.ok:
+            data = inst_resp.json()
+            inst_list = data.get("d", []) if isinstance(data, dict) else data
+            if isinstance(inst_list, dict) and "instruments" in inst_list:
+                inst_list = inst_list["instruments"]
+            for inst in inst_list:
+                if str(inst.get("tradableInstrumentId")) == str(inst_id) or str(inst.get("name")) == mapped_symbol:
+                    routes = inst.get("routes", [])
+                    for r in routes:
+                        if r.get("type") == "TRADE":
+                            route_id = r.get("id")
+                            _ROUTE_CACHE[route_cache_key] = route_id
+                            break
+                    if route_id:
                         break
-                if route_id:
-                    break
 
     order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
     payload = {
@@ -320,8 +326,8 @@ async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name
         "side": side_tl,
         "type": "market",
         "validity": "IOC",
-        "stopLossType": "absolute",
-        "takeProfitType": "absolute",
+        "stopLossType": sl_type if sl else None,
+        "takeProfitType": tp_type if tp else None,
         "tradableInstrumentId": inst_id if inst_id else mapped_symbol,
         "stopLoss": float(sl) if sl else None,
         "takeProfit": float(tp) if tp else None
@@ -358,7 +364,7 @@ async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name
 # TRADELOCKER REST — CLOSE A SPECIFIC POSITION
 # ======================================================================
 
-def fetch_tl_positions(token, acc_id, api_url, env_name):
+def fetch_tl_positions(token, acc_id, acc_num, api_url, env_name):
     """
     Fetches all open positions from TradeLocker for a given account.
     Returns a list of position dicts.
@@ -366,7 +372,7 @@ def fetch_tl_positions(token, acc_id, api_url, env_name):
     pos_url = f"{api_url}/trade/accounts/{acc_id}/positions"
     headers = {
         "Authorization": f"Bearer {token}",
-        "accNum": "1" if "e8" in env_name.lower() else str(acc_id)
+        "accNum": str(acc_num)
     }
     resp = requests.get(pos_url, headers=headers)
     if resp.ok:
@@ -381,7 +387,7 @@ def fetch_tl_positions(token, acc_id, api_url, env_name):
         print(f"[{env_name}] Failed to fetch positions: {resp.text}")
         return []
 
-def close_tl_position(token, acc_id, api_url, env_name, position_id, qty):
+def close_tl_position(token, acc_id, acc_num, api_url, env_name, position_id, qty):
     """
     Closes a specific position by its TradeLocker position ID.
     Uses the /positions/{id} DELETE or close endpoint.
@@ -389,7 +395,7 @@ def close_tl_position(token, acc_id, api_url, env_name, position_id, qty):
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "accNum": "1" if "e8" in env_name.lower() else str(acc_id)
+        "accNum": str(acc_num)
     }
 
     # TradeLocker close position endpoint
@@ -449,8 +455,8 @@ def close_tradelocker_trade(config, trade_id, entry):
     5. Updates registry
     """
     try:
-        token, acc_id = authenticate_tradelocker(config)
-        positions = fetch_tl_positions(token, acc_id, config["api_url"], config["name"])
+        token, acc_id, acc_num = authenticate_tradelocker(config)
+        positions = fetch_tl_positions(token, acc_id, acc_num, config["api_url"], config["name"])
 
         if not positions:
             print(f"[{config['name']}] No open positions found — nothing to close for {trade_id}")
@@ -473,7 +479,7 @@ def close_tradelocker_trade(config, trade_id, entry):
         position_id = position.get("id") or position.get("positionId")
         pos_qty = float(position.get("qty", qty))
 
-        success = close_tl_position(token, acc_id, config["api_url"],
+        success = close_tl_position(token, acc_id, acc_num, config["api_url"],
                                      config["name"], position_id, pos_qty)
         if success:
             registry_mark_closed(trade_id)
@@ -566,7 +572,7 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, 
 # ======================================================================
 
 async def place_multi_orders_async(active_configs, symbol, side, qty,
-                                    sl=0, tp=0, trade_id=None, signal=""):
+                                    sl=0, tp=0, trade_id=None, signal="", sl_type="offset", tp_type="offset"):
     tasks = []
     for config in active_configs:
         try:
@@ -580,11 +586,11 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
                 tasks.append({"env": config["name"], "task": task,
                                "type": "hankotrade", "trade_id": trade_id})
             else:
-                token, acc_id = authenticate_tradelocker(config)
+                token, acc_id, acc_num = authenticate_tradelocker(config)
                 task = asyncio.create_task(
-                    execute_trade_rest(token, acc_id, symbol, side, qty,
+                    execute_trade_rest(token, acc_id, acc_num, symbol, side, qty,
                                        config["api_url"], config["name"],
-                                       sl, tp, trade_id)
+                                       sl, tp, trade_id, sl_type, tp_type)
                 )
                 tasks.append({"env": config["name"], "task": task,
                                "type": "tradelocker", "trade_id": trade_id})
@@ -615,14 +621,14 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
     return results
 
 def place_market_orders_sync(active_configs, symbol, side, qty,
-                              sl=0, tp=0, trade_id=None, signal=""):
+                              sl=0, tp=0, trade_id=None, signal="", sl_type="offset", tp_type="offset"):
     try:
         def run_in_loop():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(
                 place_multi_orders_async(active_configs, symbol, side, qty,
-                                          sl, tp, trade_id, signal)
+                                          sl, tp, trade_id, signal, sl_type, tp_type)
             )
             loop.close()
         thread = threading.Thread(target=run_in_loop)
@@ -694,13 +700,13 @@ def close_by_symbol_side_fifo(active_configs, symbol, action):
         # No registry entry — try to close oldest broker position directly
         for config in tl_configs:
             try:
-                token, acc_id = authenticate_tradelocker(config)
-                positions = fetch_tl_positions(token, acc_id, config["api_url"], config["name"])
+                token, acc_id, acc_num = authenticate_tradelocker(config)
+                positions = fetch_tl_positions(token, acc_id, acc_num, config["api_url"], config["name"])
                 position = find_tl_position_by_order(positions, None, mapped_symbol, open_side)
                 if position:
                     pos_id = position.get("id") or position.get("positionId")
                     pos_qty = float(position.get("qty", 0.01))
-                    return close_tl_position(token, acc_id, config["api_url"],
+                    return close_tl_position(token, acc_id, acc_num, config["api_url"],
                                               config["name"], pos_id, pos_qty)
             except Exception as e:
                 print(f"[{config['name']}] Raw close error: {e}")
@@ -889,14 +895,16 @@ def webhook():
 
             sl = data.get("sl", 0)
             tp = data.get("tp", 0)
+            sl_type = data.get("sl_type", "offset")
+            tp_type = data.get("tp_type", "offset")
 
             # Generate unique trade ID and attach to this order
             trade_id = generate_trade_id(signal, symbol, timeframe)
-            print(f"Opening trade {trade_id}: {side} {qty} {symbol} | SL={sl} TP={tp}")
+            print(f"Opening trade {trade_id}: {side} {qty} {symbol} | SL={sl} ({sl_type}) TP={tp} ({tp_type})")
 
             results = place_market_orders_sync(
                 active_configs, symbol, side, qty, sl, tp,
-                trade_id=trade_id, signal=signal
+                trade_id=trade_id, signal=signal, sl_type=sl_type, tp_type=tp_type
             )
             print(f"Dispatch results: {results}")
 
