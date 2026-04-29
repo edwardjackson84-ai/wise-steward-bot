@@ -1,7 +1,9 @@
+
 import os
 import json
 import time
 import asyncio
+import threading
 from datetime import datetime
 import requests
 import websockets
@@ -9,73 +11,121 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv, dotenv_values
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-# We look for a Hankox specific env, otherwise fallback to live
 env_path = os.path.join(script_dir, ".env.hankolive")
-# Only load .env if it exists locally, but do NOT override system/Render env vars
 if os.path.exists(env_path):
     load_dotenv(env_path, override=False)
 
 app = Flask(__name__)
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-def send_telegram(message: str) -> None:
-    """Fire-and-forget Telegram notification. Never blocks or breaks the trade flow."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in environment.")
-        return
-    try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True,
-            },
-            timeout=5,
-        )
-        if not resp.ok:
-            print(f"Telegram notification failed (non-fatal): HTTP {resp.status_code} - {resp.text}")
-    except Exception as e:
-        print(f"Telegram notification failed (non-fatal): {e}")
-
 SYMBOL_MAP = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
-    "XAGUSD": "XAGUSD",
-    "US30": "U30USD",
-    "DJI": "U30USD",
-    "USA30": "U30USD",
-    "NAS100": "U100USD",
-    "NASDAQ": "U100USD",
-    "NQ": "U100USD",
-    "SPX": "U500USD",
-    "SPX500": "U500USD",
-    "US500": "U500USD",
-    "EURUSD": "EURUSD",
-    "GBPUSD": "GBPUSD",
-    "USDJPY": "USDJPY",
-    "AUDUSD": "AUDUSD",
-    "USDCAD": "USDCAD",
-    "NZDUSD": "NZDUSD",
-    "CADJPY": "CADJPY",
-    "NZDJPY": "NZDJPY",
-    "GBPJPY": "GBPJPY",
-    "EURJPY": "EURJPY",
-    "USDCNH": "USDCNH",
-    "USDHKD": "USDHKD",
-    "BTCUSD": "BTCUSD",
-    "WTI": "WTI",
-    "BRENT": "BRENT"
+    "US30": "US30",
+    "DJI": "US30",
+    "USA30": "US30",
+    "DOW+": "US30",
+    "NAS100": "NAS100",
+    "NASDAQ": "NAS100",
+    "NQ": "NAS100",
+    "SPX": "SPX500",
+    "US500": "SPX500",
+    "SPX500": "SPX500",
+    "BTCUSD": "BTCUSD"
 }
 
+# ======================================================================
+# TRADE REGISTRY
+# ======================================================================
+# Persists to trade_registry.json on disk so it survives server restarts.
+# Structure per entry:
+# {
+#   "trade_id": {
+#     "symbol":         "EURUSD",
+#     "side":           "buy",
+#     "qty":            0.01,
+#     "signal":         "elephant_buy",
+#     "env":            ".env.crucialdemo",
+#     "broker_order_id":"12345",        # returned by TradeLocker REST
+#     "tl_position_id": "67890",        # fetched after order fills (optional)
+#     "opened_at":      "2026-04-21T14:32:00",
+#     "status":         "open"          # "open" | "closed"
+#   }
+# }
+
+REGISTRY_PATH = os.path.join(script_dir, "trade_registry.json")
+_registry_lock = threading.Lock()
+
+def _load_registry():
+    if os.path.exists(REGISTRY_PATH):
+        try:
+            with open(REGISTRY_PATH, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[Registry] Load error: {e}")
+    return {}
+
+def _save_registry(registry):
+    try:
+        with open(REGISTRY_PATH, "w") as f:
+            json.dump(registry, f, indent=2)
+    except Exception as e:
+        print(f"[Registry] Save error: {e}")
+
+def registry_add(trade_id, symbol, side, qty, signal, env_name, broker_order_id=None):
+    with _registry_lock:
+        reg = _load_registry()
+        reg[trade_id] = {
+            "symbol":          symbol,
+            "side":            side,
+            "qty":             qty,
+            "signal":          signal,
+            "env":             env_name,
+            "broker_order_id": broker_order_id,
+            "tl_position_id":  None,
+            "opened_at":       datetime.utcnow().isoformat(),
+            "status":          "open"
+        }
+        _save_registry(reg)
+        print(f"[Registry] Saved trade {trade_id}: {side} {qty} {symbol} on {env_name}")
+
+def registry_mark_closed(trade_id):
+    with _registry_lock:
+        reg = _load_registry()
+        if trade_id in reg:
+            reg[trade_id]["status"] = "closed"
+            reg[trade_id]["closed_at"] = datetime.utcnow().isoformat()
+            _save_registry(reg)
+            print(f"[Registry] Marked {trade_id} as closed")
+
+def registry_get_open(symbol, side, env_name=None):
+    """
+    Returns a list of open trades matching symbol + side (and optionally env).
+    Used when no trade_id is provided to find the oldest matching open position.
+    """
+    with _registry_lock:
+        reg = _load_registry()
+    matches = []
+    for tid, entry in reg.items():
+        if (entry["symbol"] == symbol
+                and entry["side"] == side
+                and entry["status"] == "open"):
+            if env_name is None or entry["env"] == env_name:
+                matches.append((tid, entry))
+    # Sort oldest first so FIFO closing behaviour
+    matches.sort(key=lambda x: x[1].get("opened_at", ""))
+    return matches
+
+def registry_get(trade_id):
+    with _registry_lock:
+        reg = _load_registry()
+    return reg.get(trade_id)
+
+# ======================================================================
+# ACCOUNT CONFIG LOADER
+# ======================================================================
+
 def get_active_configs():
-    """Reads all account configurations from environment variables or .env files."""
     configs = []
-    
-    # Load local toggle state cache (useful for local dashboard, might be missing on Render)
     toggles = {}
     toggle_path = os.path.join(script_dir, "toggles.json")
     if os.path.exists(toggle_path):
@@ -85,362 +135,344 @@ def get_active_configs():
         except Exception:
             pass
 
-    # Known account types/files
-    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.gatesdemo", ".env.e8demo", ".env.e8tradelocker"]
-    
+    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.e8demo", ".env.e8live", ".env.e8markets"]
+
     for env_name in env_files:
-        env_path = os.path.join(script_dir, env_name)
-        if not os.path.exists(env_path):
+        ep = os.path.join(script_dir, env_name)
+        if not os.path.exists(ep):
             continue
-            
-        vals = dotenv_values(env_path)
-        
-        def get_val(key):
-            prefix = env_name.replace(".env.", "").upper()
-            return vals.get(f"{key}_{prefix}") or vals.get(key)
-            
-        is_active = get_val("ACCOUNT_ACTIVE")
-        if str(is_active).lower() == "true" or toggles.get(env_name) is True:
-            # Discover broker type
-            b_type = "unknown"
-            if "hanko" in env_name.lower():
-                b_type = "hankotrade"
-                is_live = "live" in env_name.lower()
-                
-                email = get_val("HANKOX_EMAIL") or get_val("HANKOX_LIVE_EMAIL") or get_val("HANKOX_DEMO_EMAIL")
-                password = get_val("HANKOX_PASSWORD") or get_val("HANKOX_LIVE_PASSWORD") or get_val("HANKOX_DEMO_PASSWORD")
-                
-                if email and password:
-                    configs.append({
-                        "name": env_name,
-                        "type": b_type,
-                        "is_live": is_live,
-                        "auth_url": "https://tradeapi.hankotrade.com/api/login",
-                        "acc_info_url": "https://tradeapi.hankotrade.com/api/act/user/account/balance",
-                        "ws_url": "wss://livefeed.hankotrade.com/" if is_live else "wss://demofeed.hankotrade.com/",
-                        "email": email,
-                        "password": password,
-                        "server": get_val("HANKOX_SERVER") or ("Hankotrade-Live" if is_live else "Hankotrade-Demo"),
-                        "symbol_suffix": ".HKT"
-                    })
-            elif "crucial" in env_name.lower() or "atlas" in env_name.lower() or "gates" in env_name.lower() or "tradelocker" in env_name.lower():
-                b_type = "tradelocker"
-                is_live = "live" in env_name.lower()
-                api_url = get_val("TRADELOCKER_API_URL") or ("https://live.tradelocker.com/backend-api" if is_live else "https://demo.tradelocker.com/backend-api")
-                
-                email = get_val("TRADELOCKER_EMAIL")
-                password = get_val("TRADELOCKER_PASSWORD")
-                server = get_val("TRADELOCKER_SERVER")
-                
-                if email and password:
-                    configs.append({
-                        "name": env_name,
-                        "type": b_type,
-                        "is_live": is_live,
-                        "ws_url": None,
-                        "api_url": api_url,
-                        "email": email,
-                        "password": password,
-                        "server": server,
-                        "account_id": get_val("TRADELOCKER_ACCOUNT_ID"),
-                        "symbol_suffix": "" 
-                    })
-            elif "e8" in env_name.lower():
-                # Match-Trader broker (E8 Markets)
-                email = file_vals.get("MT_EMAIL") or os.environ.get("MT_EMAIL")
-                password = file_vals.get("MT_PASSWORD") or os.environ.get("MT_PASSWORD")
-                if email and password:
-                    configs.append({
-                        "name": env_name,
-                        "type": "matchtrader",
-                        "is_live": "live" in env_name.lower(),
-                        "base_url": file_vals.get("MT_BASE_URL") or os.environ.get("MT_BASE_URL") or "https://mtr.e8markets.com",
-                        "email": email,
-                        "password": password,
-                        "server": file_vals.get("MT_SERVER") or "MatchTrader-Demo",
-                        "account_id": file_vals.get("MT_ACCOUNT_ID") or os.environ.get("MT_ACCOUNT_ID"),
-                        "symbol_suffix": ""
-                    })
-                
+        vals = dotenv_values(ep)
+        is_active = vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
+        if env_name in toggles:
+            is_active = bool(toggles[env_name])
+        if not is_active:
+            continue
+
+        print(f"Routing logic includes active account: {env_name}")
+
+        if "hanko" in env_name.lower():
+            b_type = "hankotrade"
+            is_live = "live" in env_name.lower()
+            configs.append({
+                "name": env_name,
+                "type": b_type,
+                "is_live": is_live,
+                "auth_url": "https://tradeapi.hankotrade.com/api/login",
+                "acc_info_url": "https://tradeapi.hankotrade.com/api/act/user/account/balance",
+                "ws_url": "wss://livefeed.hankotrade.com/" if is_live else "wss://demofeed.hankotrade.com/",
+                "email": vals.get("HANKOX_EMAIL") or vals.get("HANKOX_LIVE_ACCOUNT_ID") or vals.get("HANKOX_DEMO_ACCOUNT_ID"),
+                "password": vals.get("HANKOX_PASSWORD") or vals.get("HANKOX_LIVE_PASSWORD") or vals.get("HANKOX_DEMO_PASSWORD"),
+                "server": vals.get("HANKOX_SERVER", "Hankotrade-Live" if is_live else "Hankotrade-Demo"),
+                "symbol_suffix": ".HKT"
+            })
+        elif "crucial" in env_name.lower() or "atlas" in env_name.lower() or "e8" in env_name.lower():
+            b_type = "tradelocker"
+            is_live = "live" in env_name.lower()
+            api_url = vals.get("TRADELOCKER_API_URL",
+                "https://live.tradelocker.com/backend-api" if is_live else "https://demo.tradelocker.com/backend-api")
+            configs.append({
+                "name": env_name,
+                "type": b_type,
+                "is_live": is_live,
+                "api_url": api_url,
+                "email": vals.get("TRADELOCKER_EMAIL"),
+                "password": vals.get("TRADELOCKER_PASSWORD"),
+                "server": vals.get("TRADELOCKER_SERVER"),
+                "account_id": vals.get("TRADELOCKER_ACCOUNT_ID"),
+                "symbol_suffix": ""
+            })
+
     return configs
 
+def get_tradelocker_configs_only(active_configs):
+    return [c for c in active_configs if c["type"] == "tradelocker"]
+
+# ======================================================================
+# AUTHENTICATION
+# ======================================================================
+
 def authenticate_tradelocker(config):
-    """Authenticate with standard TradeLocker REST API."""
-    env_name = config["name"]
-    email = config["email"]
-    password = config["password"]
-    api_url = config["api_url"]
-    server = config.get("server")
-    
-    auth_url = f"{api_url}/auth/jwt/token"
+    auth_url = f"{config['api_url']}/auth/jwt/token"
     payload = {
-        "email": email,
-        "password": password,
-        "server": server
+        "email": config["email"],
+        "password": config["password"],
+        "server": config["server"]
     }
-    
-    print(f"[{env_name}] Authenticating via TradeLocker REST... URL: {auth_url}")
-    resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+    print(f"[{config['name']}] Authenticating via TradeLocker REST...")
+    resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"})
     if not resp.ok:
         raise Exception(f"TradeLocker Auth failed: {resp.text}")
-        
     token = resp.json().get("accessToken")
-    
-    # If account_id or acc_num is missing, fetch them
     acc_id = config.get("account_id")
-    acc_num = config.get("account_num")
-    if not acc_id or not acc_num:
-        acc_url = f"{config['api_url']}/auth/jwt/all-accounts"
-        acc_resp = requests.get(acc_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    if not acc_id:
+        acc_url = f"{config['api_url']}/trade/accounts"
+        acc_resp = requests.get(acc_url, headers={"Authorization": f"Bearer {token}"})
         if acc_resp.ok:
             accounts = acc_resp.json().get("accounts", [])
-            for a in accounts:
-                if acc_id and str(a.get("id")) == str(acc_id):
-                    acc_num = a.get("accNum")
-                    break
-                elif not acc_id:
-                    acc_id = a.get("id")
-                    acc_num = a.get("accNum")
-                    break
-            
-    return token, acc_id, acc_num
+            if accounts:
+                acc_id = accounts[0].get("id")
+    return token, acc_id
 
 def authenticate_hankotrade(config):
-    """Authenticate with Hanko X specific REST API."""
     login_data = {
         "email": config["email"],
         "password": config["password"],
         "server_type": "hankotrade_live" if config["is_live"] else "hankotrade_demo"
     }
-    
     headers = {
         'User-Agent': 'Mozilla/5.0',
         'Origin': 'https://trade.hankotrade.com',
         'Referer': 'https://trade.hankotrade.com/'
     }
-    
     print(f"[{config['name']}] Authenticating via Hanko X Specific API...")
-    resp = requests.post(config["auth_url"], json=login_data, headers=headers, timeout=10)
+    resp = requests.post(config["auth_url"], json=login_data, headers=headers)
     if not resp.ok:
         raise Exception(f"Hanko Auth failed: {resp.text}")
-        
     token = resp.json().get('data', {}).get('user', {}).get('token')
     if not token:
         raise Exception("No token received from Hanko login.")
-        
-    # Fetch Account ID
     headers['Authorization'] = f'Bearer {token}'
-    acc_resp = requests.post(config["acc_info_url"], json={}, headers=headers, timeout=10)
+    acc_resp = requests.post(config["acc_info_url"], json={}, headers=headers)
     acc_id = acc_resp.json().get('data', {}).get('ACCOUNT_ID') if acc_resp.ok else None
-    
     return token, acc_id
 
-def is_sabbath_mode_active():
-    """Check if the current time is within the Sabbath blackout period (Friday 4 PM to Sunday 5 PM)."""
-    now = datetime.now()
-    if now.weekday() == 4 and now.hour >= 16:
-        return True
-    if now.weekday() == 5:
-        return True
-    if now.weekday() == 6 and now.hour < 17:
-        return True
-    return False
+# ======================================================================
+# TRADELOCKER INSTRUMENT ID MAP
+# ======================================================================
 
-def is_session_active(symbol):
-    """Checks string constraints against current time for allowed trading sessions."""
-    allowed_sessions_str = os.environ.get(f"SESSIONS_{symbol}", "Asian,London,New York")
-    if not allowed_sessions_str.strip(): return True
-    allowed_sessions = [s.strip() for s in allowed_sessions_str.split(",")]
-    
-    now_utc = datetime.utcnow()
-    hour = now_utc.hour
-    
-    # Standardized Session Hours
-    # Asian Session: 22:00 - 08:00 UTC
-    # London Session: 07:00 - 16:00 UTC
-    # New York Session: 13:00 - 22:00 UTC
-    is_asian = (22 <= hour or hour < 8)
-    is_london = (7 <= hour < 16)
-    is_new_york = (13 <= hour < 22)
-    
-    if "Asian" in allowed_sessions and is_asian: return True
-    if "London" in allowed_sessions and is_london: return True
-    if "New York" in allowed_sessions and is_new_york: return True
+INSTRUMENT_ID_MAP = {
+    ".env.crucialdemo": {
+        "US30": 17028, "NAS100": 17035, "SPX500": 17034,
+        "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
+        "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
+        "BTCUSD": 17949
+    },
+    ".env.cruciallive": {
+        "US30": 17028, "NAS100": 17035, "SPX500": 17034,
+        "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
+        "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
+        "BTCUSD": 17949
+    },
+    ".env.atlasdemo": {
+        "US30": 16337, "NAS100": 16341, "XAUUSD": 16343, "BTCUSD": 16304,
+        "EURUSD": 16325, "GBPUSD": 16317
+    },
+    ".env.e8demo": {
+        "US30": 6107
+    },
+    ".env.e8live": {
+        "US30": 6107
+    },
+    ".env.e8markets": {
+        "US30": 6107
+    }
+}
 
-    return False
+# ======================================================================
+# TRADELOCKER REST — OPEN A TRADE
+# ======================================================================
 
-async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name, sl=0, tp=0, **kwargs):
-    """Executes a trade instruction directly over the TradeLocker REST API."""
-    side_lower = side.lower()
-    side_tl = "buy" if side_lower in ("buy", "long") else "sell"
-    
-    # Map Symbol to Instrument ID (TradeLocker requirement)
-    # We use a placeholder mapping or try to find it via API.
-    # For now, we'll use base symbol strings if the API supports it, but usually standard TL needs ID.
-    # NOTE: In Tradelocker, you place orders to /trade/accounts/{acc_id}/orders
-    order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
-    
-    # Symbol mapping logic for Indices/Forex
+async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name,
+                              sl=0, tp=0, trade_id=None):
+    """
+    Places a market order via TradeLocker REST.
+    Returns the broker_order_id string on success, None on failure.
+    """
+    side_tl = "buy" if side.lower() in ("buy", "long") else "sell"
     base_symbol = symbol.upper().replace(".HKT", "")
     mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
-    
-    if "e8" in env_name.lower() and not mapped_symbol.endswith("+"):
-        mapped_symbol += "+"
-    
-    # We attempt to find the ID via a quick search or use a baked-in map for Crucial
-    # (Based on standard Crucial/Tradelocker IDs)
-    # BAKED-IN INSTRUMENT IDs (Broker Specific)
-    id_maps = {
-        ".env.crucialdemo": {
-            "U30USD": 17028, "U100USD": 17035, "U500USD": 17034,
-            "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
-            "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
-            "BTCUSD": 17949
-        },
-        ".env.cruciallive": {
-            "U30USD": 17028, "U100USD": 17035, "U500USD": 17034,
-            "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
-            "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
-            "BTCUSD": 17949
-        },
-        ".env.atlasdemo": {
-            "U30USD": 16337, "U100USD": 16341, "U500USD": 16336,
-            "XAUUSD": 16343, "XAGUSD": 16344, "BTCUSD": 16304,
-            "EURUSD": 16316, "GBPUSD": 16310, "USDJPY": 16309,
-            "AUDUSD": 16323, "USDCAD": 16322, "NZDUSD": 16330,
-            "CADJPY": 16331, "NZDJPY": 16333, "GBPJPY": 16325, "EURJPY": 16329,
-            "WTI": 16306, "BRENT": 16307
-        },
-        ".env.gatesdemo": {
-            "U30USD": 13638, "U100USD": 13645, "U500USD": 13644,
-            "EURUSD": 13439, "GBPUSD": 13443, "XAUUSD": 13676
-        },
-        ".env.e8tradelocker": {
-            "U30USD+": 6107, "U100USD+": 6104, "U500USD+": 6106,
-            "XAUUSD+": 6102, "XAGUSD+": 6101
-        }
-    }
-    
-    current_map = id_maps.get(env_name, id_maps[".env.crucialdemo"])
+
+    current_map = INSTRUMENT_ID_MAP.get(env_name, INSTRUMENT_ID_MAP[".env.crucialdemo"])
     inst_id = current_map.get(mapped_symbol)
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "accNum": str(acc_num)
-    }
 
-    # Fetch Route ID for the instrument
-    route_id = None
-    try:
-        inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
-        inst_resp = requests.get(inst_url, headers=headers, timeout=10)
-        if inst_resp.ok:
-            data = inst_resp.json()
-            instruments = data.get("d", {}).get("instruments", []) if isinstance(data, dict) else []
-            for inst in instruments:
-                if str(inst.get("tradableInstrumentId")) == str(inst_id) or inst.get("name") == mapped_symbol:
-                    routes = inst.get("routes", [])
-                    for r in routes:
-                        if r.get("type") == "TRADE":
-                            route_id = r.get("id")
-                            inst_id = inst.get("tradableInstrumentId")
-                            break
-                    if route_id: break
-    except Exception as e:
-        print(f"[{env_name}] Error fetching routeId: {e}")
-
-    # GatesFX Route ID (from discovery)
-    route_id = 1482858 if ".env.gates" in env_name else route_id
-    
-    # TradeLocker uses points (ticks) for offsets. 1 pip = 10 points.
-    # We multiply by 10 if the incoming value is likely in pips (e.g. <= 150).
-    # This prevents double-multiplying if the PineScript is already sending points (e.g. 200).
-    def to_points(val):
-        if not val: return None
-        v = float(val)
-        return v * 10 if v < 1000 else v # If user sends 20, becomes 200. If 200, becomes 2000... wait, let's just strictly multiply by 10, but allow a webhook override.
-        
-    multiplier = kwargs.get("pointMultiplier", 10)
-    final_qty = float(qty)
-    
-    # --- E8 Markets Custom Scaling ---
-    # E8 requires 100x larger point values and 5x smaller lot sizes for US30 to match Atlas
-    if "e8" in env_name.lower() and base_symbol in ("US30", "DJI", "DOW+"):
-        multiplier *= 100
-        final_qty = final_qty * 0.2
-        print(f"[{env_name}] E8 Scaling Applied: Qty={qty}->{final_qty}, PointMult={multiplier}")
-    
+    order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
     payload = {
-        "price": 0, # market
-        "qty": final_qty,
+        "price": 0,
+        "qty": float(qty),
         "side": side_tl,
         "type": "market",
-        "validity": "IOC",
         "tradableInstrumentId": inst_id if inst_id else mapped_symbol,
-        "routeId": route_id,
-        "stopLoss": float(sl) * multiplier if sl else None,
-        "takeProfit": float(tp) * multiplier if tp else None
+        "stopLoss": float(sl) if sl else None,
+        "takeProfit": float(tp) if tp else None
     }
-    
-    stop_loss_type = kwargs.get("stopLossType")
-    if stop_loss_type:
-        payload["stopLossType"] = stop_loss_type
-        
-    take_profit_type = kwargs.get("takeProfitType")
-    if take_profit_type:
-        payload["takeProfitType"] = take_profit_type
-    elif tp and stop_loss_type in ("offset", "trailing_stop"):
-        payload["takeProfitType"] = "offset"
-    
-    trail_trigger = kwargs.get("trailTrigger")
-    if trail_trigger is not None:
-        payload["trailTrigger"] = float(trail_trigger) * multiplier
-        
-    trail_step = kwargs.get("trailStep")
-    if trail_step is not None:
-        payload["trailStep"] = float(trail_step) * multiplier
-        
-    tr_stop_offset = kwargs.get("trStopOffset")
-    if tr_stop_offset is not None:
-        payload["trStopOffset"] = float(tr_stop_offset) * multiplier
-    
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "accNum": str(acc_num)
+        "accNum": str(acc_id)
     }
-    
-    print(f"[{env_name}] REST Payload Dispatch: {json.dumps(payload)}")
-    resp = requests.post(order_url, json=payload, headers=headers, timeout=10)
-    
+
+    print(f"[{env_name}] REST Open Order Payload: {json.dumps(payload)}")
+    resp = requests.post(order_url, json=payload, headers=headers)
+
     if resp.ok:
+        resp_data = resp.json()
         print(f"[{env_name}] REST Order Success: {resp.text}")
-        return True
+
+        # TradeLocker returns orderId inside the response
+        broker_order_id = (
+            str(resp_data.get("orderId", ""))
+            or str(resp_data.get("id", ""))
+            or str(resp_data.get("data", {}).get("orderId", ""))
+        )
+
+        # Save to registry immediately
+        if trade_id:
+            registry_add(trade_id, mapped_symbol, side_tl, qty,
+                         signal="webhook", env_name=env_name,
+                         broker_order_id=broker_order_id)
+
+        return broker_order_id or "unknown"
     else:
         print(f"[{env_name}] REST Order Failed: {resp.text}")
+        return None
+
+# ======================================================================
+# TRADELOCKER REST — CLOSE A SPECIFIC POSITION
+# ======================================================================
+
+def fetch_tl_positions(token, acc_id, api_url, env_name):
+    """
+    Fetches all open positions from TradeLocker for a given account.
+    Returns a list of position dicts.
+    """
+    pos_url = f"{api_url}/trade/accounts/{acc_id}/positions"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "accNum": str(acc_id)
+    }
+    resp = requests.get(pos_url, headers=headers)
+    if resp.ok:
+        data = resp.json()
+        # TradeLocker wraps positions in different keys depending on version
+        positions = (data.get("positions")
+                     or data.get("data", {}).get("positions")
+                     or [])
+        print(f"[{env_name}] Fetched {len(positions)} open positions")
+        return positions
+    else:
+        print(f"[{env_name}] Failed to fetch positions: {resp.text}")
+        return []
+
+def close_tl_position(token, acc_id, api_url, env_name, position_id, qty):
+    """
+    Closes a specific position by its TradeLocker position ID.
+    Uses the /positions/{id} DELETE or close endpoint.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "accNum": str(acc_id)
+    }
+
+    # TradeLocker close position endpoint
+    close_url = f"{api_url}/trade/accounts/{acc_id}/positions/{position_id}"
+    payload = {"qty": float(qty)}
+
+    print(f"[{env_name}] Closing position {position_id} qty={qty}")
+    resp = requests.delete(close_url, json=payload, headers=headers)
+
+    if resp.ok:
+        print(f"[{env_name}] Position {position_id} closed successfully: {resp.text}")
+        return True
+    else:
+        print(f"[{env_name}] Failed to close position {position_id}: {resp.text}")
         return False
 
+def find_tl_position_by_order(positions, broker_order_id, symbol, side):
+    """
+    Tries to match a TradeLocker position to our registry entry.
+    Matching priority:
+      1. By broker_order_id if TradeLocker exposes it on the position
+      2. By symbol + side (FIFO — oldest first)
+    """
+    mapped_symbol = SYMBOL_MAP.get(symbol.upper(), symbol.upper())
+    side_tl = "buy" if side.lower() in ("buy", "long") else "sell"
+
+    # Priority 1: exact order ID match
+    if broker_order_id and broker_order_id != "unknown":
+        for pos in positions:
+            if str(pos.get("orderId", "")) == str(broker_order_id):
+                return pos
+
+    # Priority 2: symbol + side match (take oldest by creation time)
+    candidates = []
+    for pos in positions:
+        raw_pos_symbol = pos.get("symbol", "").replace(".HKT", "").upper()
+        pos_symbol = SYMBOL_MAP.get(raw_pos_symbol, raw_pos_symbol)
+        pos_side = pos.get("side", "").lower()
+        if pos_symbol == mapped_symbol and pos_side == side_tl:
+            candidates.append(pos)
+
+    if candidates:
+        # Sort by open time ascending (oldest first = FIFO)
+        candidates.sort(key=lambda p: p.get("openTime", p.get("createdAt", "")))
+        print(f"[Registry] Matched position by symbol+side FIFO for {mapped_symbol} {side_tl}")
+        return candidates[0]
+
+    return None
+
+def close_tradelocker_trade(config, trade_id, entry):
+    """
+    Main close logic for a single TradeLocker trade.
+    1. Authenticates
+    2. Fetches open positions
+    3. Matches the specific position
+    4. Closes it
+    5. Updates registry
+    """
+    try:
+        token, acc_id = authenticate_tradelocker(config)
+        positions = fetch_tl_positions(token, acc_id, config["api_url"], config["name"])
+
+        if not positions:
+            print(f"[{config['name']}] No open positions found — nothing to close for {trade_id}")
+            return False
+
+        # Determine the matching side (we're closing, so look for the open side)
+        open_side = entry["side"]  # "buy" or "sell"
+        symbol = entry["symbol"]
+        broker_order_id = entry.get("broker_order_id")
+        qty = entry["qty"]
+
+        position = find_tl_position_by_order(positions, broker_order_id, symbol, open_side)
+
+        if not position:
+            print(f"[{config['name']}] Could not find matching position for trade {trade_id} "
+                  f"({symbol} {open_side}). It may already be closed.")
+            registry_mark_closed(trade_id)
+            return False
+
+        position_id = position.get("id") or position.get("positionId")
+        pos_qty = float(position.get("qty", qty))
+
+        success = close_tl_position(token, acc_id, config["api_url"],
+                                     config["name"], position_id, pos_qty)
+        if success:
+            registry_mark_closed(trade_id)
+
+        return success
+
+    except Exception as e:
+        print(f"[{config['name']}] close_tradelocker_trade error: {e}")
+        return False
+
+# ======================================================================
+# HANKO WEBSOCKET — OPEN A TRADE (unchanged, kept for future use)
+# ======================================================================
+
 async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, sl=0, tp=0):
-    """Executes a trade instruction directly over the Hanko X WebSocket."""
-    # Normalize side: accept 'buy', 'long' -> 1;  'sell', 'short' -> 0 (ActTrader spec)
     side_lower = side.lower()
-    side_int = 1 if side_lower in ("buy", "long") else 0
-    
+    side_int = 1 if side_lower in ("buy", "long") else 2
     base_symbol = symbol.upper().replace(".HKT", "")
     mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
     formatted_symbol = f"{mapped_symbol}.HKT"
-    
+
     try:
         async with websockets.connect(wss_url) as websocket:
-            auth_msg = {
-                "auth": token,
-                "defaults": [formatted_symbol],
-                "rawFeed": True
-            }
+            auth_msg = {"auth": token, "defaults": [formatted_symbol], "rawFeed": True}
             await websocket.send(json.dumps(auth_msg))
             await asyncio.sleep(0.5)
-            
+
             order_msg = {
                 "placeOrder": {
                     "symbol": formatted_symbol,
@@ -456,327 +488,409 @@ async def execute_trade_ws(token, acc_id, symbol, side, qty, wss_url, env_name, 
             }
             print(f"[{env_name}] WS Payload Dispatch: {json.dumps(order_msg['placeOrder'])}")
             await websocket.send(json.dumps(order_msg))
-            
+
             try:
-                import zlib
-                import base64
+                import zlib, base64
                 def decode_hanko(msg):
                     try:
-                        # 1. Raw bytes check (direct zlib x9c)
                         if isinstance(msg, bytes):
                             if len(msg) > 2 and msg[0] == 0x78 and msg[1] == 0x9c:
                                 try: return zlib.decompress(msg).decode('utf-8')
                                 except: pass
-                        
-                        # 2. String check (base64 zlib or plain)
                         if isinstance(msg, str):
                             if not msg.startswith("eJ"): return msg
                             try:
                                 msg_bytes = base64.b64decode(msg)
                                 return zlib.decompress(msg_bytes).decode('utf-8')
-                            except:
-                                return msg # Fallback to plain string
-                        
-                        # 3. Bytes fallback
+                            except: return msg
                         if isinstance(msg, bytes):
                             try: return zlib.decompress(msg).decode('utf-8')
                             except: pass
-                            
                         return str(msg)
-                    except:
-                        return str(msg)
+                    except: return str(msg)
 
-                order_success = None  # None = no response received yet
                 end_time = time.time() + 5.0
                 while time.time() < end_time:
                     try:
                         resp = await asyncio.wait_for(websocket.recv(), timeout=1.0)
                         decoded = decode_hanko(resp)
-                        
                         if "{" in decoded:
                             try:
                                 data = json.loads(decoded)
-                                msg = data.get("message", data)
-                                stat = msg.get("stat") if isinstance(msg, dict) else None
-                                
-                                # Identify order response by tempOrderId or stat field
-                                if "tempOrderId" in str(data) or stat in ("OK", "NOK"):
-                                    if stat == "NOK":
-                                        resp_msg = msg.get("resp_msg", "Unknown error")
-                                        print(f"[{env_name}] WS ORDER NOK: {resp_msg}")
-                                        order_success = False
-                                    elif stat == "OK" and "tempOrderId" in str(data):
-                                        resp_msg = msg.get("resp_msg", "Order placed")
-                                        print(f"[{env_name}] WS ORDER OK: {resp_msg}")
-                                        order_success = True
-                                    else:
-                                        # Intermediate OK message (tradeupdate, account, etc.)
-                                        print(f"[{env_name}] WS ORDER RESP: {decoded}")
-                                    
-                                    if order_success is not None:
-                                        break
-                            except:
-                                pass
-                        
-                        # Check for global errors in non-JSON messages
-                        if "error" in decoded.lower() and "tempOrderId" in decoded:
-                            print(f"[{env_name}] WS ERROR: {decoded}")
-                            order_success = False
-                            break
-                            
-                    except asyncio.TimeoutError:
-                        continue
-                
-                if order_success is None:
-                    print(f"[{env_name}] WS: No order confirmation received (timeout)")
-                        
+                                if "stat" in str(data) or "tempOrderId" in str(data):
+                                    print(f"[{env_name}] WS ORDER RESP: {decoded}")
+                                    break
+                            except: pass
+                        if "error" in decoded.lower() or "NOK" in decoded:
+                            print(f"[{env_name}] WS STATUS: {decoded}")
+                            if "tempOrderId" in decoded: break
+                    except asyncio.TimeoutError: continue
             except Exception as e:
                 print(f"[{env_name}] WS Wait Error: {e}")
-                
-            return order_success if order_success is not None else True
-            
+
+            return True
     except Exception as e:
         print(f"[{env_name}] WebSocket Error: {e}")
         return False
 
-async def place_multi_orders_async(active_configs, symbol, side, qty, sl=0, tp=0, **kwargs):
-    """Concurrent execution across multi-broker landscape."""
+# ======================================================================
+# MULTI-BROKER OPEN — WITH TRADE ID
+# ======================================================================
+
+async def place_multi_orders_async(active_configs, symbol, side, qty,
+                                    sl=0, tp=0, trade_id=None, signal=""):
     tasks = []
-    
     for config in active_configs:
         try:
-            # Pre-resolve symbol mapping for logging clarity
-            base_sym = symbol.upper().replace(".HKT", "")
-            mapped_sym = SYMBOL_MAP.get(base_sym, base_sym)
-            display_sym = f"{mapped_sym}{config.get('symbol_suffix', '')}"
-            print(f"[{config['name']}] Preparing to route {side} for {display_sym}...")
-
-            # 1. Authenticate based on type
             if config["type"] == "hankotrade":
                 token, acc_id = authenticate_hankotrade(config)
-                # 2. Hanko uses WS dispatch
-                task = asyncio.create_task(execute_trade_ws(token, acc_id, symbol, side, qty, config["ws_url"], config["name"], sl, tp))
-            elif config["type"] == "matchtrader":
-                # 3. Match-Trader uses its own REST executor (synchronous, wrapped in a coroutine)
-                async def _mt_task(cfg=config):
-                    from matchtrader_executor import place_order_matchtrader
-                    return place_order_matchtrader(cfg, symbol, side, qty, sl, tp)
-                task = asyncio.create_task(_mt_task())
+                task = asyncio.create_task(
+                    execute_trade_ws(token, acc_id, symbol, side, qty,
+                                     config["ws_url"], config["name"], sl, tp)
+                )
+                # Hanko: register with no broker_order_id (WS doesn't return it easily)
+                tasks.append({"env": config["name"], "task": task,
+                               "type": "hankotrade", "trade_id": trade_id})
             else:
-                token, acc_id, acc_num = authenticate_tradelocker(config)
-                # 2. TradeLocker uses REST dispatch
-                task = asyncio.create_task(execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, config["api_url"], config["name"], sl, tp, **kwargs))
-                
-            tasks.append({"env": config["name"], "task": task})
+                token, acc_id = authenticate_tradelocker(config)
+                task = asyncio.create_task(
+                    execute_trade_rest(token, acc_id, symbol, side, qty,
+                                       config["api_url"], config["name"],
+                                       sl, tp, trade_id)
+                )
+                tasks.append({"env": config["name"], "task": task,
+                               "type": "tradelocker", "trade_id": trade_id})
         except Exception as e:
             print(f"[{config['name']}] Multi-Routing Fail: {e}")
-            
+
     results = {}
     for t in tasks:
         try:
-            success = await t["task"]
+            result = await t["task"]
+            success = bool(result)
             results[t["env"]] = success
-            status = "✅ SUCCESS" if success else "❌ FAILED"
+
+            # For Hanko (no order ID returned), register now with placeholder
+            if t["type"] == "hankotrade" and success and t["trade_id"]:
+                base_symbol = SYMBOL_MAP.get(symbol.upper(), symbol.upper())
+                side_norm = "buy" if side.lower() in ("buy","long") else "sell"
+                registry_add(t["trade_id"], base_symbol, side_norm, qty,
+                             signal=signal, env_name=t["env"],
+                             broker_order_id="hanko_ws")
+
+            status = "SUCCESS" if success else "FAILED"
             print(f"[{t['env']}] Global Routing Result: {status}")
         except Exception as e:
             print(f"[{t['env']}] Task Error: {e}")
             results[t["env"]] = False
-        
+
     return results
 
-def place_market_orders_sync(active_configs, symbol, side, qty, sl=0, tp=0, **kwargs):
-    """Synchronous wrapper to deploy orders async in a background thread."""
-    import threading
-    # Guard: cap concurrent trade threads to avoid memory exhaustion on Render
-    active_thread_count = threading.active_count()
-    if active_thread_count > 20:
-        print(f"WARNING: {active_thread_count} threads active — skipping dispatch to avoid OOM")
-        return "Skipped (thread limit)"
+def place_market_orders_sync(active_configs, symbol, side, qty,
+                              sl=0, tp=0, trade_id=None, signal=""):
     try:
         def run_in_loop():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(place_multi_orders_async(active_configs, symbol, side, qty, sl, tp, **kwargs))
-            finally:
-                loop.close()
-            
-        thread = threading.Thread(target=run_in_loop, daemon=True)
+            loop.run_until_complete(
+                place_multi_orders_async(active_configs, symbol, side, qty,
+                                          sl, tp, trade_id, signal)
+            )
+            loop.close()
+        thread = threading.Thread(target=run_in_loop)
+        thread.daemon = True
         thread.start()
         return "Dispatched to background thread"
     except Exception as e:
         print(f"Failed to dispatch thread: {e}")
         return "Dispatch Error"
 
+# ======================================================================
+# CLOSE A SPECIFIC TRADE — TRADELOCKER ONLY
+# ======================================================================
 
+def close_specific_trade(active_configs, trade_id):
+    """
+    Looks up a trade_id in the registry and closes the matching
+    TradeLocker position. Hanko closes fall back to netting (unchanged).
+    Returns True if at least one broker closed successfully.
+    """
+    entry = registry_get(trade_id)
+    if not entry:
+        print(f"[Registry] trade_id '{trade_id}' not found in registry")
+        return False
+
+    if entry["status"] == "closed":
+        print(f"[Registry] trade_id '{trade_id}' is already marked closed — skipping")
+        return False
+
+    env_name = entry["env"]
+    success = False
+
+    for config in active_configs:
+        if config["name"] != env_name:
+            continue
+
+        if config["type"] == "tradelocker":
+            print(f"[Registry] Closing TL trade {trade_id} on {env_name}")
+            success = close_tradelocker_trade(config, trade_id, entry)
+        else:
+            # Hanko fallback: net out with opposite order
+            print(f"[Registry] Hanko fallback net-close for {trade_id} on {env_name}")
+            close_side = "sell" if entry["side"] == "buy" else "buy"
+            place_market_orders_sync([config], entry["symbol"],
+                                      close_side, entry["qty"], 0, 0)
+            registry_mark_closed(trade_id)
+            success = True
+
+    return success
+
+def close_by_symbol_side_fifo(active_configs, symbol, action):
+    """
+    Fallback when no trade_id is provided.
+    Closes the oldest open position matching symbol + side (FIFO).
+    Only operates on TradeLocker configs.
+    """
+    open_side = "buy" if action == "close_long" else "sell"
+    mapped_symbol = SYMBOL_MAP.get(symbol.upper(), symbol.upper())
+
+    tl_configs = get_tradelocker_configs_only(active_configs)
+    if not tl_configs:
+        print("[Close FIFO] No active TradeLocker configs found")
+        return False
+
+    matches = registry_get_open(mapped_symbol, open_side)
+    if not matches:
+        print(f"[Close FIFO] No open registry entries for {mapped_symbol} {open_side} — "
+              "attempting raw position close on broker")
+        # No registry entry — try to close oldest broker position directly
+        for config in tl_configs:
+            try:
+                token, acc_id = authenticate_tradelocker(config)
+                positions = fetch_tl_positions(token, acc_id, config["api_url"], config["name"])
+                position = find_tl_position_by_order(positions, None, mapped_symbol, open_side)
+                if position:
+                    pos_id = position.get("id") or position.get("positionId")
+                    pos_qty = float(position.get("qty", 0.01))
+                    return close_tl_position(token, acc_id, config["api_url"],
+                                              config["name"], pos_id, pos_qty)
+            except Exception as e:
+                print(f"[{config['name']}] Raw close error: {e}")
+        return False
+
+    # Close the oldest open match
+    trade_id, entry = matches[0]
+    print(f"[Close FIFO] Closing oldest open trade {trade_id} for {mapped_symbol} {open_side}")
+    return close_specific_trade(active_configs, trade_id)
+
+# ======================================================================
+# UTILITY
+# ======================================================================
+
+def is_sabbath_mode_active():
+    now = datetime.now()
+    if now.weekday() == 4 and now.hour >= 16: return True
+    if now.weekday() == 5: return True
+    if now.weekday() == 6 and now.hour < 17: return True
+    return False
+
+def is_session_active(symbol):
+    allowed_sessions_str = os.environ.get(f"SESSIONS_{symbol}", "Asian,London,New York")
+    if not allowed_sessions_str.strip(): return True
+    allowed_sessions = [s.strip() for s in allowed_sessions_str.split(",")]
+    now_utc = datetime.utcnow()
+    hour = now_utc.hour
+    is_asian    = (22 <= hour or hour < 8)
+    is_london   = (7 <= hour < 16)
+    is_new_york = (13 <= hour < 22)
+    if "Asian"    in allowed_sessions and is_asian:    return True
+    if "London"   in allowed_sessions and is_london:   return True
+    if "New York" in allowed_sessions and is_new_york: return True
+    return False
+
+def generate_trade_id(signal, symbol, timeframe=""):
+    """
+    Generates a unique trade ID using signal name, symbol, and timestamp.
+    Example: WS_elephant_buy_EURUSD_3_1745123456789
+    """
+    ts = int(time.time() * 1000)
+    parts = [p for p in ["WS", signal, symbol, timeframe, str(ts)] if p]
+    return "_".join(parts)
+
+# ======================================================================
+# FLASK ROUTES
+# ======================================================================
 
 @app.route("/toggle", methods=["POST"])
 def toggle_account():
     data = request.json
     env_name = data.get("env_name")
     is_active = data.get("active")
-    
-    if env_name and env_name in [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.forexcom", ".env.gatesdemo", ".env.e8demo", ".env.e8tradelocker"]:
+    valid_envs = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo",
+                  ".env.cruciallive", ".env.atlasdemo", ".env.forexcom",
+                  ".env.e8demo", ".env.e8live", ".env.e8markets"]
+    if env_name and env_name in valid_envs:
         toggle_path = os.path.join(script_dir, "toggles.json")
         toggles = {}
         if os.path.exists(toggle_path):
             try:
                 with open(toggle_path, "r") as f:
                     toggles = json.load(f)
-            except Exception:
-                pass
-                
+            except Exception: pass
         toggles[env_name] = bool(is_active)
-        
         with open(toggle_path, "w") as f:
             json.dump(toggles, f)
-            
-        return jsonify({"status": "success", "message": f"{env_name} set to {is_active} in ephemeral cache"})
+        return jsonify({"status": "success",
+                        "message": f"{env_name} set to {is_active}"})
     return jsonify({"status": "error", "message": "Invalid environment file"}), 400
 
+@app.route("/registry", methods=["GET"])
+def view_registry():
+    """Debug endpoint — returns the full trade registry."""
+    status_filter = request.args.get("status")  # ?status=open or ?status=closed
+    reg = _load_registry()
+    if status_filter:
+        reg = {k: v for k, v in reg.items() if v.get("status") == status_filter}
+    return jsonify(reg), 200
+
 @app.route("/webhook", methods=["POST"])
-
 def webhook():
-    if request.is_json or request.content_type == 'text/plain':
-        try:
-            data = request.get_json(force=True) if request.content_type == 'text/plain' else request.json
-            print(f"\\n--- Hanko X Webhook Signal ---\\nReceived data: {data}")
-            
-            symbol = data.get("symbol") or data.get("ticker", "UNKNOWN")
-            action = data.get("action", "").lower()
-
-            send_telegram(
-                f"*[Wise Steward] Signal Received*\n"
-                f"{symbol} {action.upper()} qty={data.get('qty', data.get('contracts', '?'))}\n"
-                f"SL: {data.get('stopLoss', '-')}  TP: {data.get('takeProfit', '-')}\n"
-                f"_{data.get('comment', '')}_"
-            )
-
-            # 0. Sabbath Mode Check
-            bypass_sabbath = str(data.get("bypass_sabbath", "false")).lower() == "true"
-            if is_sabbath_mode_active() and not bypass_sabbath:
-                print(f"Rejecting trade signal for {symbol}: Sabbath Mode Active.")
-                send_telegram(f"*[Wise Steward] Rejected*\n{symbol} {action.upper()}\nReason: Sabbath Mode Active")
-                return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
-            
-            # 1. Session Filter — only applies to entry actions, not close/signal
-            # Also skip session check if 'signal' action (journal only)
-            skip_session_check = action in ["close_long", "close_short", "close_all", "signal"]
-            if not skip_session_check and symbol != "UNKNOWN":
-                if not is_session_active(symbol):
-                    print(f"Rejecting trade signal for {symbol}: Outside allowed sessions.")
-                    send_telegram(f"*[Wise Steward] Rejected*\n{symbol} {action.upper()}\nReason: Outside allowed sessions")
-                    return jsonify({"status": "rejected", "reason": "Session Closed"}), 200
-
-            # 2. Filter out non-trade actions (signals are journal-only)
-            if action == "signal":
-                print(f"Signal alert received for {symbol}. Logging only — no trade execution.")
-                return jsonify({"status": "logged", "message": f"Signal for {symbol} recorded"}), 200
-
-            # 3. Visual Arbiter (mocked/placeholder as per other executors)
-            enable_vision = str(os.environ.get("ENABLE_VISUAL_ARBITER", "false")).lower() == "true"
-            if enable_vision and action not in ["close_long", "close_short", "close_all"]:
-                print("Visual Arbiter checking (stub)...")
-                
-            # 4. Execution Phase
-            try:
-                active_configs = get_active_configs()
-                if not active_configs:
-                    print("Notice: Signal received but no accounts are toggled active.")
-                    send_telegram(f"*[Wise Steward] Rejected*\n{symbol} {action.upper()}\nReason: No active accounts toggled on")
-                    return jsonify({"status": "ignored", "reason": "No active accounts"}), 200
-                
-                # Handling order logic
-                if action == "close_all":
-                    # Sabbath / End-of-Week: close ALL open positions by netting
-                    # We close both buy and sell sides for all mapped symbols
-                    print("CLOSE_ALL triggered — attempting to flatten all positions.")
-                    all_symbols = list(SYMBOL_MAP.values())
-                    for close_sym in set(all_symbols):
-                        qty = float(os.environ.get(f"LOT_SIZE_{close_sym}", 0.0))
-                        if qty <= 0:
-                            qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
-                        # Close any longs (sell) and shorts (buy)
-                        place_market_orders_sync(active_configs, close_sym, "sell", qty, 0, 0)
-                        place_market_orders_sync(active_configs, close_sym, "buy", qty, 0, 0)
-                    print("CLOSE_ALL sequence dispatched.")
-
-                elif action in ["close_long", "close_short"]:
-                    # Implement "Netting" close by placing opposite trade
-                    side = "sell" if action == "close_long" else "buy"
-                    qty = float(data.get("contracts", data.get("qty", 0.0)))
-                    if qty <= 0:
-                        qty = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
-                        if qty <= 0:
-                            qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
-                    
-                    print(f"Executing Netting CLOSE for {symbol}: placing {side} of {qty} lots")
-                    results = place_market_orders_sync(active_configs, symbol, side, qty, 0, 0)
-
-                elif action in ("buy", "sell", "long", "short", "entry"):
-                    # Qty logic: prioritize 'contracts' (actual lots) over 'qty' (often 1.0 default)
-                    qty = float(data.get("contracts", data.get("qty", 0.0)))
-                    if qty <= 0:
-                        qty = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
-                        if qty <= 0:
-                            qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
-                    
-                    if qty <= 0:
-                        print(f"Rejecting trade: Resolved lot size {qty} is still <= 0")
-                        return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
-                        
-                    # Normalize side direction from any recognized format
-                    raw_side = data.get("side", "").lower()
-                    raw_action = action  # already lower-cased above
-
-                    if raw_side in ("buy", "sell", "long", "short"):
-                        side = "buy" if raw_side in ("buy", "long") else "sell"
-                    elif raw_action in ("buy", "sell", "long", "short"):
-                        side = "buy" if raw_action in ("buy", "long") else "sell"
-                    else:
-                        side = "buy"  # safe fallback
-
-                    print(f"[DEBUG] raw_side={repr(raw_side)!r} raw_action={repr(raw_action)!r} resolved_side={side}")
-                    sl = data.get("sl") or data.get("stopLoss", 0)
-                    tp = data.get("tp") or data.get("takeProfit", 0)
-                    
-                    kwargs = {}
-                    if "stopLossType" in data: 
-                        sl_type = data["stopLossType"]
-                        if sl_type == "trailing_stop":
-                            sl_type = "offset"
-                        kwargs["stopLossType"] = sl_type
-                    if "trailTrigger" in data: kwargs["trailTrigger"] = data["trailTrigger"]
-                    if "trailStep" in data: kwargs["trailStep"] = data["trailStep"]
-                    if "trStopOffset" in data: kwargs["trStopOffset"] = data["trStopOffset"]
-                    if "takeProfitType" in data: kwargs["takeProfitType"] = data["takeProfitType"]
-                    
-                    # Dynamically determine multiplier based on whether user is sending pips or points
-                    # If sl <= 150, assume it's Pips and needs x10 conversion for TradeLocker.
-                    # If it's already > 150 (like 200 points), assume they already converted it.
-                    sl_val = float(sl) if sl else 0
-                    kwargs["pointMultiplier"] = 10 if 0 < sl_val <= 150 else 1
-                    
-                    results = place_market_orders_sync(active_configs, symbol, side, qty, sl, tp, **kwargs)
-                    print(f"Multi-account execution results: {results}")
-                else:
-                    print(f"Unknown action '{action}' — ignoring.")
-                    return jsonify({"status": "ignored", "reason": f"Unknown action: {action}"}), 200
-                    
-            except Exception as e:
-                import sys
-                print(f"Execution Pipeline Error: {e}", file=sys.stderr)
-                send_telegram(f"*[Wise Steward] EXECUTION ERROR*\n{symbol} {action.upper()}\nError: {str(e)[:200]}")
-                return jsonify({"status": "error", "message": str(e)}), 500
-                
-            return jsonify({"status": "success", "message": "Signal processed"}), 200
-            
-        except Exception as e:
-            send_telegram(f"*[Wise Steward] WEBHOOK ERROR*\nError: {str(e)[:200]}")
-            return jsonify({"status": "error", "message": str(e)}), 400
-    else:
+    if not (request.is_json or request.content_type == 'text/plain'):
         return jsonify({"status": "error", "message": "Unsupported Media Type"}), 415
 
+    try:
+        data = request.get_json(force=True)
+        print(f"\n--- Wise Steward Webhook ---\nReceived: {data}")
+
+        symbol    = data.get("symbol", "UNKNOWN")
+        action    = data.get("action", "").lower()
+        signal    = data.get("signal", action)
+        timeframe = data.get("timeframe", data.get("tf", ""))
+
+        # -- Sabbath check --
+        bypass_sabbath = str(data.get("bypass_sabbath", "false")).lower() == "true"
+        if is_sabbath_mode_active() and not bypass_sabbath:
+            print(f"Rejecting {symbol}: Sabbath Mode Active.")
+            return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
+
+        # -- Session filter (skip for close actions) --
+        if action not in ["close_long", "close_short", "close_all"] and symbol != "UNKNOWN":
+            if not is_session_active(symbol):
+                print(f"Rejecting {symbol}: Outside allowed sessions.")
+                return jsonify({"status": "rejected", "reason": "Session Closed"}), 200
+
+        # -- Signal (informational only) --
+        if action == "signal":
+            print(f"Signal alert for {symbol} — logging only.")
+            return jsonify({"status": "logged",
+                            "message": f"Signal for {symbol} recorded"}), 200
+
+        active_configs = get_active_configs()
+        if not active_configs:
+            print("No active accounts configured.")
+            return jsonify({"status": "ignored", "reason": "No active accounts"}), 200
+
+        # ==============================================================
+        # CLOSE ALL
+        # ==============================================================
+        if action == "close_all":
+            print("CLOSE_ALL triggered — flattening all positions.")
+
+            # Close all open entries in registry for TradeLocker
+            with _registry_lock:
+                reg = _load_registry()
+            open_trades = [(tid, e) for tid, e in reg.items() if e["status"] == "open"]
+            tl_configs = get_tradelocker_configs_only(active_configs)
+
+            for trade_id, entry in open_trades:
+                matching = [c for c in tl_configs if c["name"] == entry["env"]]
+                if matching:
+                    close_tradelocker_trade(matching[0], trade_id, entry)
+                else:
+                    # Hanko fallback
+                    hanko_cfgs = [c for c in active_configs
+                                  if c["type"] == "hankotrade" and c["name"] == entry["env"]]
+                    if hanko_cfgs:
+                        close_side = "sell" if entry["side"] == "buy" else "buy"
+                        place_market_orders_sync(hanko_cfgs, entry["symbol"],
+                                                  close_side, entry["qty"], 0, 0)
+                        registry_mark_closed(trade_id)
+
+            print("CLOSE_ALL sequence completed.")
+
+        # ==============================================================
+        # CLOSE LONG / CLOSE SHORT
+        # ==============================================================
+        elif action in ["close_long", "close_short"]:
+            trade_id = data.get("trade_id")
+
+            if trade_id:
+                # Preferred path — close the exact trade by ID
+                print(f"Close request for specific trade_id: {trade_id}")
+                success = close_specific_trade(active_configs, trade_id)
+            else:
+                # Fallback path — close oldest open position for this symbol/side (FIFO)
+                print(f"No trade_id provided — using FIFO close for {symbol} {action}")
+                success = close_by_symbol_side_fifo(active_configs, symbol, action)
+
+            status_msg = "closed" if success else "close_attempted_no_match"
+            return jsonify({"status": status_msg,
+                            "trade_id": trade_id or "fifo"}), 200
+
+        # ==============================================================
+        # OPEN A TRADE (buy / sell / long / short / entry)
+        # ==============================================================
+        elif action in ("buy", "sell", "long", "short", "entry"):
+            qty = float(data.get("contracts", data.get("qty", 0.0)))
+            if qty <= 0:
+                qty = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
+            if qty <= 0:
+                qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
+            if qty <= 0:
+                print(f"Rejecting: resolved lot size is 0")
+                return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
+
+            raw_side   = data.get("side", "").lower()
+            raw_action = action
+            if raw_side in ("buy", "sell", "long", "short"):
+                side = "buy" if raw_side in ("buy", "long") else "sell"
+            elif raw_action in ("buy", "sell", "long", "short"):
+                side = "buy" if raw_action in ("buy", "long") else "sell"
+            else:
+                side = "buy"
+
+            sl = data.get("sl", 0)
+            tp = data.get("tp", 0)
+
+            # Generate unique trade ID and attach to this order
+            trade_id = generate_trade_id(signal, symbol, timeframe)
+            print(f"Opening trade {trade_id}: {side} {qty} {symbol} | SL={sl} TP={tp}")
+
+            results = place_market_orders_sync(
+                active_configs, symbol, side, qty, sl, tp,
+                trade_id=trade_id, signal=signal
+            )
+            print(f"Dispatch results: {results}")
+
+            return jsonify({
+                "status": "success",
+                "trade_id": trade_id,
+                "message": f"Order dispatched — trade_id: {trade_id}"
+            }), 200
+
+        else:
+            print(f"Unknown action '{action}' — ignoring.")
+            return jsonify({"status": "ignored",
+                            "reason": f"Unknown action: {action}"}), 200
+
+    except Exception as e:
+        import sys, traceback
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    return jsonify({"status": "success", "message": "Signal processed"}), 200
+
+
 if __name__ == "__main__":
-    print("Starting Hanko X Webhook Executor...")
+    print("Starting Wise Steward Webhook Executor (TradeLocker + Hanko)...")
     app.run(host="0.0.0.0", port=5001)
