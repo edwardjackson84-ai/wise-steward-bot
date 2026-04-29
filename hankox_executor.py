@@ -301,7 +301,7 @@ async def execute_trade_rest(token, acc_id, symbol, side, qty, api_url, env_name
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "accNum": str(acc_id)
+        "accNum": "1" if "e8" in env_name.lower() else str(acc_id)
     }
 
     print(f"[{env_name}] REST Open Order Payload: {json.dumps(payload)}")
@@ -341,7 +341,7 @@ def fetch_tl_positions(token, acc_id, api_url, env_name):
     pos_url = f"{api_url}/trade/accounts/{acc_id}/positions"
     headers = {
         "Authorization": f"Bearer {token}",
-        "accNum": str(acc_id)
+        "accNum": "1" if "e8" in env_name.lower() else str(acc_id)
     }
     resp = requests.get(pos_url, headers=headers)
     if resp.ok:
@@ -364,7 +364,7 @@ def close_tl_position(token, acc_id, api_url, env_name, position_id, qty):
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "accNum": str(acc_id)
+        "accNum": "1" if "e8" in env_name.lower() else str(acc_id)
     }
 
     # TradeLocker close position endpoint
