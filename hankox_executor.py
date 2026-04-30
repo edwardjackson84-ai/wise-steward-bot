@@ -1057,7 +1057,8 @@ def webhook():
             import json as _json
             print(f"[DEBUG PAYLOAD]\n{_json.dumps(data, indent=2)}")
 
-        symbol    = data.get("symbol", "UNKNOWN")
+        # Pine Script sends "ticker" not "symbol" — check both
+        symbol    = data.get("symbol", data.get("ticker", "UNKNOWN")).upper()
         action    = data.get("action", "").lower()
         signal    = data.get("signal", action)
         timeframe = data.get("timeframe", data.get("tf", ""))
@@ -1155,10 +1156,45 @@ def webhook():
                 side = "buy"
 
             price_val = float(data.get("price", 0))
+
+            # Normalize Pine Script camelCase field names to executor keys.
+            # Pine sends: stopLoss, takeProfit, ticker, stopLossType, takeProfitType
+            # The executor's resolve_offset() looks for: sl, tp, sl_type, tp_type
+            # We patch data here so all downstream logic works unchanged.
+            if "stopLoss" in data and "sl" not in data:
+                data["sl"] = data["stopLoss"]
+            if "takeProfit" in data and "tp" not in data:
+                data["tp"] = data["takeProfit"]
+            if "ticker" in data and symbol == "UNKNOWN":
+                symbol = str(data["ticker"]).upper()
+            if "stopLossType" in data and "sl_type" not in data:
+                data["sl_type"] = data["stopLossType"]
+            if "takeProfitType" in data and "tp_type" not in data:
+                data["tp_type"] = data["takeProfitType"]
+
+            # Inject sl_unit / tp_unit based on asset class so the legacy
+            # fallback multiplier fires correctly for FX pairs.
+            # Pine sends raw fractional pip counts (e.g. 200 = 20 pips).
+            # Once a Pine template is updated to emit sl_unit explicitly,
+            # this injection will be superseded by the explicit key.
+            asset_class_hint = _get_asset_class(symbol)
+            if "sl_unit" not in data:
+                if asset_class_hint == "forex":
+                    data["sl_unit"] = "pips"
+                elif asset_class_hint == "index":
+                    data["sl_unit"] = "points"
+                # gold left unset → legacy fallback fires with 0.01 multiplier
+            if "tp_unit" not in data:
+                if asset_class_hint == "forex":
+                    data["tp_unit"] = "pips"
+                elif asset_class_hint == "index":
+                    data["tp_unit"] = "points"
+
             sl = resolve_offset(symbol, side, 'sl', data, price_val)
             tp = resolve_offset(symbol, side, 'tp', data, price_val)
 
-            # We enforce sl_type="offset" for our downstream engine since resolve_offset converts everything to offset distance.
+            # resolve_offset() always returns absolute price distance.
+            # Downstream engine receives it as "offset" and divides by tick size.
             sl_type = "offset"
             tp_type = "offset"
 
