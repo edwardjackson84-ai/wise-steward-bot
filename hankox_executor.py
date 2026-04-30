@@ -276,7 +276,9 @@ INSTRUMENT_ID_MAP = {
 
 # ======================================================================
 # TRADELOCKER REST — OPEN A TRADE
-# ======================================================================async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name,
+# ======================================================================
+
+async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name,
                               sl=0, tp=0, trade_id=None, sl_type="offset", tp_type="offset"):
     """
     Places a market order via TradeLocker REST.
