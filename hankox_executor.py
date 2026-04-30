@@ -2,6 +2,7 @@
 import os
 import json
 import time
+import math
 import asyncio
 import threading
 from datetime import datetime
@@ -298,10 +299,12 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     }
 
     route_id = None
+    meta = None
     route_cache_key = f"{env_name}_{inst_id}"
 
     if route_cache_key in _ROUTE_CACHE:
-        route_id = _ROUTE_CACHE[route_cache_key]
+        meta = _ROUTE_CACHE[route_cache_key]
+        route_id = meta["routeId"]
     else:
         inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
         inst_resp = requests.get(inst_url, headers=headers)
@@ -316,23 +319,57 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     for r in routes:
                         if r.get("type") == "TRADE":
                             route_id = r.get("id")
-                            _ROUTE_CACHE[route_cache_key] = route_id
+                            detail_url = f"{api_url}/trade/instruments/{inst_id}?routeId={route_id}"
+                            det_resp = requests.get(detail_url, headers=headers)
+                            schedule = det_resp.json().get("d", {}).get("tickSize", []) if det_resp.ok else []
+                            meta = {"routeId": route_id, "tickSizeSchedule": schedule}
+                            _ROUTE_CACHE[route_cache_key] = meta
                             break
                     if route_id:
                         break
 
     order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
 
-    sl_val = float(sl) if sl else None
-    tp_val = float(tp) if tp else None
+    sl_val = None
+    tp_val = None
 
-    # Normalize offset ticks for E8 Markets indices
-    if "e8" in env_name.lower() and sl_type == "offset":
-        e8_multipliers = {"US30": 100, "NAS100": 100, "SPX500": 100, "DOW+": 100}
-        multiplier = e8_multipliers.get(mapped_symbol, e8_multipliers.get(base_symbol, 1))
+    if sl_type == "offset" or tp_type == "offset":
+        schedule = meta.get("tickSizeSchedule") if meta else None
+        if not schedule:
+            raise RuntimeError(f"CRITICAL: tickSize schedule missing for {mapped_symbol} on {env_name}")
         
-        sl_val = sl_val * multiplier if sl_val else None
-        tp_val = tp_val * multiplier if tp_val else None
+        if len(schedule) != 1:
+            raise NotImplementedError(
+                f"Multi-tier tickSize for {mapped_symbol} on {env_name} requires "
+                f"price-aware resolution (got {len(schedule)} tiers). "
+                f"Add a /quotes lookup before trading tiered instruments."
+            )
+            
+        tier = schedule[0]
+        if "tickSize" not in tier:
+            raise RuntimeError(f"tickSize field missing from schedule entry for {mapped_symbol}: {tier}")
+            
+        tick_size = float(tier["tickSize"])
+        
+        if sl:
+            sl_val = math.floor(float(sl) / tick_size)
+            if sl_val <= 0:
+                raise ValueError(
+                    f"Stop loss offset rounded to {sl_val} ticks "
+                    f"(sl_points={sl}, tickSize={tick_size}) — "
+                    f"strategy SL is too tight for this instrument's price granularity"
+                )
+        if tp:
+            tp_val = math.floor(float(tp) / tick_size)
+            if tp_val <= 0:
+                raise ValueError(
+                    f"Take profit offset rounded to {tp_val} ticks "
+                    f"(tp_points={tp}, tickSize={tick_size}) — "
+                    f"strategy TP is too tight for this instrument's price granularity"
+                )
+    else:
+        sl_val = float(sl) if sl else None
+        tp_val = float(tp) if tp else None
 
     payload = {
         "price": 0,
