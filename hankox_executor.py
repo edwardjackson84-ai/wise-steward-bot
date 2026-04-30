@@ -35,6 +35,91 @@ SYMBOL_MAP = {
     "USDCAD": "USDCAD"
 }
 
+# ======================================================================
+# ASSET CLASS CLASSIFICATION
+# ======================================================================
+# Used by resolve_offset() and the per-class sanity envelope.
+# Add new symbols here as new instruments are onboarded.
+
+_GOLD_SYMBOLS = {"XAUUSD", "GOLD", "XAUEUR", "XAGUSD"}
+_JPY_SYMBOLS  = {"USDJPY", "EURJPY", "GBPJPY", "AUDJPY", "CADJPY", "CHFJPY", "NZDJPY"}
+_FOREX_PIP_SYMBOLS = {
+    # Majors
+    "EURUSD", "GBPUSD", "USDCAD", "AUDUSD", "NZDUSD", "USDCHF",
+    # Non-JPY crosses
+    "EURGBP", "EURCHF", "EURAUD", "EURNZD", "EURCAD",
+    "GBPCHF", "GBPAUD", "GBPNZD", "GBPCAD",
+    "AUDNZD", "AUDCAD", "AUDCHF",
+    "NZDCAD", "NZDCHF", "CADCHF",
+    # NOTE: Any FX pair NOT in this set falls to the "index" default (multiplier=1.0)
+    # which will misclassify it. Add symbols here as new pairs are onboarded.
+}
+
+# Max absolute price distance per asset class.
+# NOTE: V5 changed index max from 10,000 (V2) to 5,000. Confirm this is
+# acceptable before deploy. Strategies with 5,000-10,000 point stops will
+# start raising sanity errors.
+# TODO: expand to per-symbol dict when FX/Metals are fully onboarded.
+_MAX_ABSOLUTE_DISTANCE = {
+    "forex": 0.05,    # ~500 pip max on standard FX
+    "gold":  50.0,    # $50 max on XAUUSD
+    "index": 5000.0,  # 5,000 point max on US30/NAS100
+}
+
+def _get_asset_class(symbol):
+    s = symbol.upper().replace("+", "")
+    if s in _GOLD_SYMBOLS:                              return "gold"
+    if s in _JPY_SYMBOLS or s in _FOREX_PIP_SYMBOLS:   return "forex"
+    return "index"
+
+def _convert_to_absolute_distance(value, symbol, sl_unit):
+    """Converts a user-supplied numeric value to an absolute price distance.
+    sl_unit must be one of: 'price', 'pips', 'points', or None (legacy fallback).
+    """
+    s = symbol.upper().replace("+", "")
+    asset_class = _get_asset_class(symbol)
+
+    # Guard: reject negative distances at the input boundary
+    if value < 0:
+        raise ValueError(
+            f"Distance value must be non-negative for {symbol}; got {value}"
+        )
+
+    if sl_unit == "price":
+        # Caller asserts value is already an absolute price distance — pass through
+        return value
+
+    if sl_unit == "pips":
+        if asset_class != "forex":
+            raise ValueError(
+                f"sl_unit='pips' is invalid for {asset_class} symbol {symbol}. "
+                f"Use 'points' for indices or 'price' for absolute distance."
+            )
+        pip_size = 0.001 if s in _JPY_SYMBOLS else 0.0001  # exact set, no substring
+        return value * pip_size
+
+    if sl_unit == "points":
+        if asset_class != "index":
+            raise ValueError(
+                f"sl_unit='points' is invalid for {asset_class} symbol {symbol}. "
+                f"Use 'pips' for FX or 'price' for absolute distance."
+            )
+        return value
+
+    # Legacy fallback — sl_unit not set, guess by asset class, log loudly
+    if s in _GOLD_SYMBOLS:          multiplier = 0.01
+    elif s in _JPY_SYMBOLS:         multiplier = 0.001
+    elif s in _FOREX_PIP_SYMBOLS:   multiplier = 0.0001
+    else:                           multiplier = 1.0
+
+    dist = value * multiplier
+    print(
+        f"[PAYLOAD CLASSIFY LEGACY FALLBACK] {symbol} class={asset_class} "
+        f"raw={value} multiplier={multiplier} -> dist={dist}. "
+        f"ADD sl_unit to your Pine alert to silence this log."
+    )
+    return dist
+
 _ROUTE_CACHE = {}
 
 # ======================================================================
@@ -335,17 +420,19 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     sl_val = None
     tp_val = None
 
-    # Broker-agnostic sanity bounds pre-conversion
-    # Future direction: use a dictionary for per-asset MAX_STOP_POINTS, e.g.:
-    # MAX_STOP_POINTS = {"US30": 10000, "EURUSD": 1000}.get(mapped_symbol, 10000)
-    # TODO: Expand this as FX/Metals are onboarded.
-    MAX_STOP_POINTS = 10000
-    MAX_TP_POINTS = 20000
-    
-    if sl and float(sl) > MAX_STOP_POINTS:
-        raise ValueError(f"SANITY CHECK FAILED: sl_points={sl} exceeds {MAX_STOP_POINTS} max points for {mapped_symbol}")
-    if tp and float(tp) > MAX_TP_POINTS:
-        raise ValueError(f"SANITY CHECK FAILED: tp_points={tp} exceeds {MAX_TP_POINTS} max points for {mapped_symbol}")
+    # Per-asset-class sanity bounds on resolved absolute distance (NOT ticks).
+    # These are consistent across brokers because they operate in price units.
+    asset_class = _get_asset_class(mapped_symbol)
+    max_dist = _MAX_ABSOLUTE_DISTANCE[asset_class]
+    if sl and float(sl) > max_dist:
+        raise ValueError(
+            f"SANITY: sl_distance={sl} exceeds {asset_class} max={max_dist} for {mapped_symbol}"
+        )
+    if tp and float(tp) > max_dist * 2:
+        # TODO: revisit if running strategies with R:R > 2:1 — wide TPs will hit this bound.
+        raise ValueError(
+            f"SANITY: tp_distance={tp} exceeds {asset_class} max={max_dist*2} for {mapped_symbol}"
+        )
 
     if sl_type == "offset" or tp_type == "offset":
         schedule = meta.get("tickSizeSchedule") if meta else None
@@ -372,15 +459,19 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
             if sl_val <= 0:
                 raise ValueError(
                     f"Stop loss offset rounded to {sl_val} ticks "
-                    f"(sl_points={sl}, tickSize={tick_size}) — "
+                    f"(sl_distance={sl}, tickSize={tick_size}) — "
                     f"strategy SL is too tight for this instrument's price granularity"
                 )
+            # Guard against floating-point rounding artifacts in tick division
+            raw_ticks = float(sl) / tick_size
+            if abs(raw_ticks - round(raw_ticks)) > 0.01:
+                print(f"[{env_name}] [TICK ROUNDING] {mapped_symbol} sl raw={raw_ticks:.6f} -> floored={sl_val}")
         if tp:
             tp_val = math.floor(float(tp) / tick_size)
             if tp_val <= 0:
                 raise ValueError(
                     f"Take profit offset rounded to {tp_val} ticks "
-                    f"(tp_points={tp}, tickSize={tick_size}) — "
+                    f"(tp_distance={tp}, tickSize={tick_size}) — "
                     f"strategy TP is too tight for this instrument's price granularity"
                 )
                 
@@ -869,7 +960,7 @@ def _validate_absolute_direction(symbol, side, target_type, abs_price, price, so
             raise ValueError(f"Sell TP must be below entry; got {source}={abs_price}, price={price} for {symbol}")
 
 def resolve_offset(symbol, side, target_type, data, price):
-    # 1. Explicit Absolute Price Key (e.g. sl_price)
+    # Priority 1: Explicit absolute PRICE LEVEL key (e.g. sl_price)
     explicit_price = data.get(f"{target_type}_price")
     if explicit_price is not None:
         if not price or price <= 0:
@@ -883,18 +974,26 @@ def resolve_offset(symbol, side, target_type, data, price):
         print(f"[PAYLOAD CLASSIFY] {symbol} {side} explicit={target_type}_price -> dist={dist}")
         return dist
 
-    # 2. Explicit Offset Distance Key (e.g. sl_offset)
+    sl_unit = data.get(f"{target_type}_unit")  # "price", "pips", or "points"
+
+    # Priority 2: Explicit distance key — unit applied via shared converter
     explicit_offset = data.get(f"{target_type}_offset")
     if explicit_offset is not None:
-        dist = float(explicit_offset)
-        print(f"[PAYLOAD CLASSIFY] {symbol} {side} explicit={target_type}_offset -> dist={dist}")
+        dist = _convert_to_absolute_distance(float(explicit_offset), symbol, sl_unit)
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} explicit={target_type}_offset sl_unit={sl_unit} -> dist={dist}")
         return dist
 
-    # 3. Typed Legacy Key (e.g. sl + sl_type)
     value = float(data.get(target_type, 0))
-    if value == 0 or price == 0:
-        return value
 
+    # Guard: separate "no SL/TP" (legitimate) from missing price (error)
+    if value == 0:
+        return 0
+    if price == 0:
+        raise ValueError(
+            f"Cannot resolve {target_type}={value} for {symbol}: entry price missing or invalid"
+        )
+
+    # Priority 3: Typed legacy key (sl_type)
     explicit_type = data.get(f"{target_type}_type")
     if explicit_type == "absolute":
         _validate_absolute_direction(symbol, side, target_type, value, price, "type=absolute")
@@ -902,18 +1001,26 @@ def resolve_offset(symbol, side, target_type, data, price):
         print(f"[PAYLOAD CLASSIFY] {symbol} {side} type=absolute -> dist={dist}")
         return dist
     elif explicit_type == "offset":
-        print(f"[PAYLOAD CLASSIFY] {symbol} {side} type=offset -> dist={value}")
-        return value
+        dist = _convert_to_absolute_distance(value, symbol, sl_unit)
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} type=offset sl_unit={sl_unit} -> dist={dist}")
+        return dist
 
-    # 4. Fallback: Directional & Magnitude Heuristic
+    # V5: sl_unit is authoritative — bypasses heuristic entirely.
+    # Any payload that sets sl_unit asserts "I know what this number is."
+    if sl_unit is not None:
+        dist = _convert_to_absolute_distance(value, symbol, sl_unit)
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} sl_unit={sl_unit} (no sl_type) -> dist={dist}")
+        return dist
+
+    # Priority 4: Heuristic — ONLY fires when no explicit unit info is present
     is_absolute_candidate = False
     if target_type == 'sl':
-        if side == "buy" and value < price: is_absolute_candidate = True
+        if side == "buy" and value < price:    is_absolute_candidate = True
         elif side == "sell" and value > price: is_absolute_candidate = True
     elif target_type == 'tp':
-        if side == "buy" and value > price: is_absolute_candidate = True
+        if side == "buy" and value > price:    is_absolute_candidate = True
         elif side == "sell" and value < price: is_absolute_candidate = True
-            
+
     if is_absolute_candidate:
         if value > price * 0.10:
             inferred = "absolute"
@@ -921,17 +1028,17 @@ def resolve_offset(symbol, side, target_type, data, price):
             dist = abs(price - value)
         elif value < price * 0.05:
             inferred = "offset"
-            dist = value
+            dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None → legacy fallback
         else:
             raise ValueError(
                 f"Ambiguous {target_type}={value} for {symbol} {side} at price={price}. "
-                f"Offset zone: <{price*0.05:.2f}, Absolute zone: >{price*0.10:.2f}. "
-                f"Add '{target_type}_type': 'absolute' or 'offset' to your Pine alert."
+                f"Offset zone: <{price*0.05:.5f}, Absolute zone: >{price*0.10:.5f}. "
+                f"Add '{target_type}_unit': 'pips' or 'price' to your Pine alert."
             )
     else:
         inferred = "offset"
-        dist = value
-        
+        dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None → legacy fallback
+
     print(f"[PAYLOAD CLASSIFY] {symbol} {side} price={price} {target_type}_in={value} -> inferred={inferred} -> dist={dist}")
     return dist
 
@@ -943,6 +1050,12 @@ def webhook():
     try:
         data = request.get_json(force=True)
         print(f"\n--- Wise Steward Webhook ---\nReceived: {data}")
+
+        # Set DEBUG_PAYLOAD_CAPTURE=true in Render env vars to log full formatted payload.
+        # Use this to capture live fixture samples — copy output to tests/fixtures/.
+        if os.environ.get("DEBUG_PAYLOAD_CAPTURE", "").lower() == "true":
+            import json as _json
+            print(f"[DEBUG PAYLOAD]\n{_json.dumps(data, indent=2)}")
 
         symbol    = data.get("symbol", "UNKNOWN")
         action    = data.get("action", "").lower()
