@@ -333,6 +333,18 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     sl_val = None
     tp_val = None
 
+    # Broker-agnostic sanity bounds pre-conversion
+    # Future direction: use a dictionary for per-asset MAX_STOP_POINTS, e.g.:
+    # MAX_STOP_POINTS = {"US30": 10000, "EURUSD": 1000}.get(mapped_symbol, 10000)
+    # TODO: Expand this as FX/Metals are onboarded.
+    MAX_STOP_POINTS = 10000
+    MAX_TP_POINTS = 20000
+    
+    if sl and float(sl) > MAX_STOP_POINTS:
+        raise ValueError(f"SANITY CHECK FAILED: sl_points={sl} exceeds {MAX_STOP_POINTS} max points for {mapped_symbol}")
+    if tp and float(tp) > MAX_TP_POINTS:
+        raise ValueError(f"SANITY CHECK FAILED: tp_points={tp} exceeds {MAX_TP_POINTS} max points for {mapped_symbol}")
+
     if sl_type == "offset" or tp_type == "offset":
         schedule = meta.get("tickSizeSchedule") if meta else None
         if not schedule:
@@ -842,6 +854,85 @@ def view_registry():
         reg = {k: v for k, v in reg.items() if v.get("status") == status_filter}
     return jsonify(reg), 200
 
+def _validate_absolute_direction(symbol, side, target_type, abs_price, price, source):
+    if target_type == 'sl':
+        if side == "buy" and abs_price >= price:
+            raise ValueError(f"Buy SL must be below entry; got {source}={abs_price}, price={price} for {symbol}")
+        if side == "sell" and abs_price <= price:
+            raise ValueError(f"Sell SL must be above entry; got {source}={abs_price}, price={price} for {symbol}")
+    elif target_type == 'tp':
+        if side == "buy" and abs_price <= price:
+            raise ValueError(f"Buy TP must be above entry; got {source}={abs_price}, price={price} for {symbol}")
+        if side == "sell" and abs_price >= price:
+            raise ValueError(f"Sell TP must be below entry; got {source}={abs_price}, price={price} for {symbol}")
+
+def resolve_offset(symbol, side, target_type, data, price):
+    # 1. Explicit Absolute Price Key (e.g. sl_price)
+    explicit_price = data.get(f"{target_type}_price")
+    if explicit_price is not None:
+        if not price or price <= 0:
+            raise ValueError(
+                f"Cannot resolve {target_type}_price={explicit_price} for {symbol}: "
+                f"entry price missing or invalid (got {price})"
+            )
+        abs_val = float(explicit_price)
+        _validate_absolute_direction(symbol, side, target_type, abs_val, price, f"explicit_{target_type}_price")
+        dist = abs(price - abs_val)
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} explicit={target_type}_price -> dist={dist}")
+        return dist
+
+    # 2. Explicit Offset Distance Key (e.g. sl_offset)
+    explicit_offset = data.get(f"{target_type}_offset")
+    if explicit_offset is not None:
+        dist = float(explicit_offset)
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} explicit={target_type}_offset -> dist={dist}")
+        return dist
+
+    # 3. Typed Legacy Key (e.g. sl + sl_type)
+    value = float(data.get(target_type, 0))
+    if value == 0 or price == 0:
+        return value
+
+    explicit_type = data.get(f"{target_type}_type")
+    if explicit_type == "absolute":
+        _validate_absolute_direction(symbol, side, target_type, value, price, "type=absolute")
+        dist = abs(price - value)
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} type=absolute -> dist={dist}")
+        return dist
+    elif explicit_type == "offset":
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} type=offset -> dist={value}")
+        return value
+
+    # 4. Fallback: Directional & Magnitude Heuristic
+    is_absolute_candidate = False
+    if target_type == 'sl':
+        if side == "buy" and value < price: is_absolute_candidate = True
+        elif side == "sell" and value > price: is_absolute_candidate = True
+    elif target_type == 'tp':
+        if side == "buy" and value > price: is_absolute_candidate = True
+        elif side == "sell" and value < price: is_absolute_candidate = True
+            
+    if is_absolute_candidate:
+        if value > price * 0.10:
+            inferred = "absolute"
+            _validate_absolute_direction(symbol, side, target_type, value, price, "inferred_absolute")
+            dist = abs(price - value)
+        elif value < price * 0.05:
+            inferred = "offset"
+            dist = value
+        else:
+            raise ValueError(
+                f"Ambiguous {target_type}={value} for {symbol} {side} at price={price}. "
+                f"Offset zone: <{price*0.05:.2f}, Absolute zone: >{price*0.10:.2f}. "
+                f"Add '{target_type}_type': 'absolute' or 'offset' to your Pine alert."
+            )
+    else:
+        inferred = "offset"
+        dist = value
+        
+    print(f"[PAYLOAD CLASSIFY] {symbol} {side} price={price} {target_type}_in={value} -> inferred={inferred} -> dist={dist}")
+    return dist
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     if not (request.is_json or request.content_type == 'text/plain'):
@@ -948,34 +1039,13 @@ def webhook():
             else:
                 side = "buy"
 
-            raw_sl = data.get("sl_points")
-            if raw_sl is None:
-                sl_val = float(data.get("sl", 0))
-                price_val = float(data.get("price", 0))
-                if data.get("sl_type", "offset") == "offset" and sl_val > 0 and price_val > 0:
-                    if abs(price_val - sl_val) < price_val * 0.5:
-                        raw_sl = abs(price_val - sl_val)
-                    else:
-                        raw_sl = sl_val
-                else:
-                    raw_sl = sl_val
-            sl = raw_sl
+            price_val = float(data.get("price", 0))
+            sl = resolve_offset(symbol, side, 'sl', data, price_val)
+            tp = resolve_offset(symbol, side, 'tp', data, price_val)
 
-            raw_tp = data.get("tp_points")
-            if raw_tp is None:
-                tp_val = float(data.get("tp", 0))
-                price_val = float(data.get("price", 0))
-                if data.get("tp_type", "offset") == "offset" and tp_val > 0 and price_val > 0:
-                    if abs(price_val - tp_val) < price_val * 0.5:
-                        raw_tp = abs(price_val - tp_val)
-                    else:
-                        raw_tp = tp_val
-                else:
-                    raw_tp = tp_val
-            tp = raw_tp
-
-            sl_type = data.get("sl_type", "offset")
-            tp_type = data.get("tp_type", "offset")
+            # We enforce sl_type="offset" for our downstream engine since resolve_offset converts everything to offset distance.
+            sl_type = "offset"
+            tp_type = "offset"
 
             # Generate unique trade ID and attach to this order
             trade_id = generate_trade_id(signal, symbol, timeframe)
