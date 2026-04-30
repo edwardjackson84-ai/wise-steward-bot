@@ -31,7 +31,8 @@ SYMBOL_MAP = {
     "SPX": "SPX500",
     "US500": "SPX500",
     "SPX500": "SPX500",
-    "BTCUSD": "BTCUSD"
+    "BTCUSD": "BTCUSD",
+    "USDCAD": "USDCAD"
 }
 
 _ROUTE_CACHE = {}
@@ -259,19 +260,19 @@ INSTRUMENT_ID_MAP = {
     },
     ".env.atlasdemo": {
         "US30": 16337, "NAS100": 16341, "XAUUSD": 16343, "BTCUSD": 16304,
-        "EURUSD": 16325, "GBPUSD": 16317
+        "EURUSD": 16325, "GBPUSD": 16317, "USDCAD": 16322
     },
     ".env.e8demo": {
-        "US30": 6107
+        "US30": 6107, "USDCAD": 6125
     },
     ".env.e8live": {
-        "US30": 6107
+        "US30": 6107, "USDCAD": 6125
     },
     ".env.e8markets": {
-        "US30": 6107
+        "US30": 6107, "USDCAD": 6125
     },
     ".env.e8tradelocker": {
-        "US30": 6107
+        "US30": 6107, "USDCAD": 6125
     }
 }
 
@@ -319,7 +320,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     for r in routes:
                         if r.get("type") == "TRADE":
                             route_id = r.get("id")
-                            detail_url = f"{api_url}/trade/instruments/{inst_id}?routeId={route_id}"
+                            real_inst_id = inst.get("tradableInstrumentId")
+                            detail_url = f"{api_url}/trade/instruments/{real_inst_id}?routeId={route_id}"
                             det_resp = requests.get(detail_url, headers=headers)
                             schedule = det_resp.json().get("d", {}).get("tickSize", []) if det_resp.ok else []
                             meta = {"routeId": route_id, "tickSizeSchedule": schedule}
