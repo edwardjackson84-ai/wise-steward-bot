@@ -339,6 +339,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
             raise RuntimeError(f"CRITICAL: tickSize schedule missing for {mapped_symbol} on {env_name}")
         
         if len(schedule) != 1:
+            # TODO: Implement price-aware resolution for multi-tier instruments.
+            # Pull current price from /quotes on cache miss, find tier where leftRangeLimit <= current_price
             raise NotImplementedError(
                 f"Multi-tier tickSize for {mapped_symbol} on {env_name} requires "
                 f"price-aware resolution (got {len(schedule)} tiers). "
@@ -367,6 +369,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     f"(tp_points={tp}, tickSize={tick_size}) — "
                     f"strategy TP is too tight for this instrument's price granularity"
                 )
+                
+        print(f"[{env_name}] [ORDER RESOLUTION] {mapped_symbol} sl_pts={sl} tp_pts={tp} tickSize={tick_size} sl_ticks={sl_val} tp_ticks={tp_val}")
     else:
         sl_val = float(sl) if sl else None
         tp_val = float(tp) if tp else None
