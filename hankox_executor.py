@@ -960,6 +960,16 @@ def _validate_absolute_direction(symbol, side, target_type, abs_price, price, so
             raise ValueError(f"Sell TP must be below entry; got {source}={abs_price}, price={price} for {symbol}")
 
 def resolve_offset(symbol, side, target_type, data, price):
+    # Priority 0: sl_points / tp_points — pre-computed absolute distance from Pine Script.
+    # f_json() in wise_steward_master.pine sends slp = abs(price - sl) as sl_points.
+    # This is the highest-confidence path: Pine already did the math.
+    points_key = f"{target_type}_points"
+    precomputed = data.get(points_key)
+    if precomputed is not None:
+        dist = float(precomputed)
+        print(f"[PAYLOAD CLASSIFY] {symbol} {side} {points_key}={dist} (pre-computed) -> dist={dist}")
+        return dist
+
     # Priority 1: Explicit absolute PRICE LEVEL key (e.g. sl_price)
     explicit_price = data.get(f"{target_type}_price")
     if explicit_price is not None:
@@ -1158,37 +1168,19 @@ def webhook():
             price_val = float(data.get("price", 0))
 
             # Normalize Pine Script camelCase field names to executor keys.
-            # Pine sends: stopLoss, takeProfit, ticker, stopLossType, takeProfitType
-            # The executor's resolve_offset() looks for: sl, tp, sl_type, tp_type
-            # We patch data here so all downstream logic works unchanged.
-            if "stopLoss" in data and "sl" not in data:
-                data["sl"] = data["stopLoss"]
-            if "takeProfit" in data and "tp" not in data:
-                data["tp"] = data["takeProfit"]
-            if "ticker" in data and symbol == "UNKNOWN":
-                symbol = str(data["ticker"]).upper()
-            if "stopLossType" in data and "sl_type" not in data:
-                data["sl_type"] = data["stopLossType"]
-            if "takeProfitType" in data and "tp_type" not in data:
-                data["tp_type"] = data["takeProfitType"]
+            if "stopLoss" in data and "sl" not in data:   data["sl"] = data["stopLoss"]
+            if "takeProfit" in data and "tp" not in data:  data["tp"] = data["takeProfit"]
+            if "stopLossType" in data and "sl_type" not in data:   data["sl_type"] = data["stopLossType"]
+            if "takeProfitType" in data and "tp_type" not in data: data["tp_type"] = data["takeProfitType"]
 
-            # Inject sl_unit / tp_unit based on asset class so the legacy
-            # fallback multiplier fires correctly for FX pairs.
-            # Pine sends raw fractional pip counts (e.g. 200 = 20 pips).
-            # Once a Pine template is updated to emit sl_unit explicitly,
-            # this injection will be superseded by the explicit key.
+            # Auto-inject sl_unit / tp_unit ONLY when sl_points/tp_points are NOT present.
             asset_class_hint = _get_asset_class(symbol)
-            if "sl_unit" not in data:
-                if asset_class_hint == "forex":
-                    data["sl_unit"] = "pips"
-                elif asset_class_hint == "index":
-                    data["sl_unit"] = "points"
-                # gold left unset → legacy fallback fires with 0.01 multiplier
-            if "tp_unit" not in data:
-                if asset_class_hint == "forex":
-                    data["tp_unit"] = "pips"
-                elif asset_class_hint == "index":
-                    data["tp_unit"] = "points"
+            if "sl_unit" not in data and "sl_points" not in data:
+                if asset_class_hint == "forex":   data["sl_unit"] = "pips"
+                elif asset_class_hint == "index": data["sl_unit"] = "points"
+            if "tp_unit" not in data and "tp_points" not in data:
+                if asset_class_hint == "forex":   data["tp_unit"] = "pips"
+                elif asset_class_hint == "index": data["tp_unit"] = "points"
 
             sl = resolve_offset(symbol, side, 'sl', data, price_val)
             tp = resolve_offset(symbol, side, 'tp', data, price_val)
