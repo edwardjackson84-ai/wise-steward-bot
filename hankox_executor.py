@@ -322,6 +322,18 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                         break
 
     order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
+
+    sl_val = float(sl) if sl else None
+    tp_val = float(tp) if tp else None
+
+    # Normalize offset ticks for E8 Markets indices
+    if "e8" in env_name.lower() and sl_type == "offset":
+        e8_multipliers = {"US30": 100, "NAS100": 100, "SPX500": 100, "DOW+": 100}
+        multiplier = e8_multipliers.get(mapped_symbol, e8_multipliers.get(base_symbol, 1))
+        
+        sl_val = sl_val * multiplier if sl_val else None
+        tp_val = tp_val * multiplier if tp_val else None
+
     payload = {
         "price": 0,
         "qty": float(qty),
@@ -331,8 +343,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         "stopLossType": sl_type if sl else None,
         "takeProfitType": tp_type if tp else None,
         "tradableInstrumentId": inst_id if inst_id else mapped_symbol,
-        "stopLoss": float(sl) if sl else None,
-        "takeProfit": float(tp) if tp else None
+        "stopLoss": sl_val,
+        "takeProfit": tp_val
     }
     if route_id:
         payload["routeId"] = route_id
