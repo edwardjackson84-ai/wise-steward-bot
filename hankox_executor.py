@@ -948,8 +948,32 @@ def webhook():
             else:
                 side = "buy"
 
-            sl = data.get("sl", 0)
-            tp = data.get("tp", 0)
+            raw_sl = data.get("sl_points")
+            if raw_sl is None:
+                sl_val = float(data.get("sl", 0))
+                price_val = float(data.get("price", 0))
+                if data.get("sl_type", "offset") == "offset" and sl_val > 0 and price_val > 0:
+                    if abs(price_val - sl_val) < price_val * 0.5:
+                        raw_sl = abs(price_val - sl_val)
+                    else:
+                        raw_sl = sl_val
+                else:
+                    raw_sl = sl_val
+            sl = raw_sl
+
+            raw_tp = data.get("tp_points")
+            if raw_tp is None:
+                tp_val = float(data.get("tp", 0))
+                price_val = float(data.get("price", 0))
+                if data.get("tp_type", "offset") == "offset" and tp_val > 0 and price_val > 0:
+                    if abs(price_val - tp_val) < price_val * 0.5:
+                        raw_tp = abs(price_val - tp_val)
+                    else:
+                        raw_tp = tp_val
+                else:
+                    raw_tp = tp_val
+            tp = raw_tp
+
             sl_type = data.get("sl_type", "offset")
             tp_type = data.get("tp_type", "offset")
 
