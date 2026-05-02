@@ -995,17 +995,22 @@ def resolve_offset(symbol, side, target_type, data, price):
 
     value = float(data.get(target_type, 0))
 
-    # Guard: separate "no SL/TP" (legitimate) from missing price (error)
+    # Legitimate "no SL/TP" case — value of zero means not set
     if value == 0:
         return 0
-    if price == 0:
-        raise ValueError(
-            f"Cannot resolve {target_type}={value} for {symbol}: entry price missing or invalid"
-        )
 
     # Priority 3: Typed legacy key (sl_type)
+    # NOTE: price==0 guard is placed AFTER this block intentionally.
+    # Pure-offset payloads (sl_type='offset', sl_unit='pips') don't need
+    # an anchor price and must not raise here.
     explicit_type = data.get(f"{target_type}_type")
     if explicit_type == "absolute":
+        # Absolute price level DOES need anchor price
+        if not price or price <= 0:
+            raise ValueError(
+                f"Cannot resolve {target_type}={value} for {symbol} as absolute: "
+                f"entry price missing or invalid (got {price})"
+            )
         _validate_absolute_direction(symbol, side, target_type, value, price, "type=absolute")
         dist = abs(price - value)
         print(f"[PAYLOAD CLASSIFY] {symbol} {side} type=absolute -> dist={dist}")
@@ -1016,11 +1021,19 @@ def resolve_offset(symbol, side, target_type, data, price):
         return dist
 
     # V5: sl_unit is authoritative — bypasses heuristic entirely.
-    # Any payload that sets sl_unit asserts "I know what this number is."
+    # Pure-offset payloads with sl_unit set do not need price.
     if sl_unit is not None:
         dist = _convert_to_absolute_distance(value, symbol, sl_unit)
         print(f"[PAYLOAD CLASSIFY] {symbol} {side} sl_unit={sl_unit} (no sl_type) -> dist={dist}")
         return dist
+
+    # From here the heuristic needs price as an anchor — guard now
+    if not price or price <= 0:
+        raise ValueError(
+            f"Cannot resolve {target_type}={value} for {symbol}: "
+            f"entry price missing. Add \"price\": {{{{close}}}} to your Pine alert "
+            f"or set sl_unit/sl_type to skip the heuristic."
+        )
 
     # Priority 4: Heuristic — ONLY fires when no explicit unit info is present
     is_absolute_candidate = False
@@ -1038,7 +1051,7 @@ def resolve_offset(symbol, side, target_type, data, price):
             dist = abs(price - value)
         elif value < price * 0.05:
             inferred = "offset"
-            dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None → legacy fallback
+            dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None -> legacy fallback
         else:
             raise ValueError(
                 f"Ambiguous {target_type}={value} for {symbol} {side} at price={price}. "
@@ -1047,7 +1060,7 @@ def resolve_offset(symbol, side, target_type, data, price):
             )
     else:
         inferred = "offset"
-        dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None → legacy fallback
+        dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None -> legacy fallback
 
     print(f"[PAYLOAD CLASSIFY] {symbol} {side} price={price} {target_type}_in={value} -> inferred={inferred} -> dist={dist}")
     return dist
@@ -1182,12 +1195,31 @@ def webhook():
                 if asset_class_hint == "forex":   data["tp_unit"] = "pips"
                 elif asset_class_hint == "index": data["tp_unit"] = "points"
 
-            sl = resolve_offset(symbol, side, 'sl', data, price_val)
-            tp = resolve_offset(symbol, side, 'tp', data, price_val)
+            # ---------------------------------------------------------------
+            # TRAILING STOP DETECTION
+            # When stopLossType is 'trailingOffset' or 'trailing', the SL is
+            # maintained dynamically by the broker relative to live price.
+            # resolve_offset() must NOT be called — it would convert the offset
+            # to a static distance and defeat the trail entirely.
+            # trStopOffset (or stopLoss as fallback) is passed straight through.
+            # ---------------------------------------------------------------
+            raw_sl_type = data.get("sl_type", data.get("stopLossType", ""))
+            is_trailing = raw_sl_type in ("trailingOffset", "trailing", "trailingStop")
 
-            # resolve_offset() always returns absolute price distance.
-            # Downstream engine receives it as "offset" and divides by tick size.
-            sl_type = "offset"
+            if is_trailing:
+                # Convert trailing offset from pips to absolute distance for tick math
+                trail_raw = float(data.get("trStopOffset", data.get("sl", data.get("stopLoss", 0))))
+                if trail_raw > 0:
+                    sl = _convert_to_absolute_distance(trail_raw, symbol, data.get("sl_unit"))
+                else:
+                    sl = 0
+                sl_type = "trailing"
+                print(f"[TRAILING STOP] {symbol} {side} trail_raw={trail_raw} -> trail_dist={sl}")
+            else:
+                sl = resolve_offset(symbol, side, 'sl', data, price_val)
+                sl_type = "offset"
+
+            tp = resolve_offset(symbol, side, 'tp', data, price_val)
             tp_type = "offset"
 
             # Generate unique trade ID and attach to this order
