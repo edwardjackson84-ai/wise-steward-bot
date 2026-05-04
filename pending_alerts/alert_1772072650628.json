@@ -1,9 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "price": "1.35666",
-    "signal_type": "Bearish FVG Created",
-    "symbol": "GBPUSD"
-  },
-  "received_at": "2026-02-26T02:24:03.213274"
-}

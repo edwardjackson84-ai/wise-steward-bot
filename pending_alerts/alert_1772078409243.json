@@ -1,8 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "signal_type": "BOS Bearish",
-    "symbol": "GBPUSD"
-  },
-  "received_at": "2026-02-26T04:00:04.831340"
-}

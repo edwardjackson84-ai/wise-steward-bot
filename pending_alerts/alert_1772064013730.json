@@ -1,9 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "price": "6936.9",
-    "signal_type": "Bearish FVG Created",
-    "symbol": "US500"
-  },
-  "received_at": "2026-02-26T00:00:02.181149"
-}

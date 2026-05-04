@@ -1,8 +1,0 @@
-{
-  "payload": {
-    "action": "close_short",
-    "message": "Short TP/SL Hit",
-    "symbol": "US30"
-  },
-  "received_at": "2026-02-26T00:39:03.825451"
-}

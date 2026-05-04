@@ -1,8 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "signal_type": "FVG Filled",
-    "symbol": "NAS100"
-  },
-  "received_at": "2026-02-26T03:18:05.590474"
-}

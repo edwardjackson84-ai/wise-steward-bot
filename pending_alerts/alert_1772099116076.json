@@ -1,8 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "signal_type": "BOS Bearish",
-    "symbol": "EURUSD"
-  },
-  "received_at": "2026-02-26T09:45:08.435156"
-}

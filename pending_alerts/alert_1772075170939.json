@@ -1,9 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "price": "25252.3",
-    "signal_type": "Price Entered FVG",
-    "symbol": "NAS100"
-  },
-  "received_at": "2026-02-26T03:06:03.566208"
-}

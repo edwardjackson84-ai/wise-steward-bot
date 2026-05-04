@@ -1,9 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "price": "25264.6",
-    "signal_type": "Change of Character UP",
-    "symbol": "NAS100"
-  },
-  "received_at": "2026-02-26T03:36:03.213814"
-}

@@ -1,9 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "price": "1.35596",
-    "signal_type": "Change of Character UP",
-    "symbol": "GBPUSD"
-  },
-  "received_at": "2026-02-26T00:42:11.965545"
-}

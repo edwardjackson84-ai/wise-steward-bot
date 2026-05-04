@@ -1,8 +1,0 @@
-{
-  "payload": {
-    "action": "close_long",
-    "message": "Long TP/SL Hit",
-    "symbol": "EURUSD"
-  },
-  "received_at": "2026-02-26T00:12:07.014136"
-}

@@ -1,9 +1,0 @@
-{
-  "payload": {
-    "action": "signal",
-    "price": "25249.4",
-    "signal_type": "Bearish FVG Created",
-    "symbol": "NAS100"
-  },
-  "received_at": "2026-02-26T04:18:00.703434"
-}
