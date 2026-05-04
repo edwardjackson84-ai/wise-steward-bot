@@ -930,8 +930,12 @@ def generate_trade_id(signal, symbol, timeframe=""):
 @app.route("/toggle", methods=["POST"])
 def toggle_account():
     # Webhook Authentication
+    import hmac
     expected_token = os.environ.get("WEBHOOK_SECRET")
-    if expected_token and request.args.get("token") != expected_token:
+    if not expected_token:
+        print("[Auth] CRITICAL: WEBHOOK_SECRET not configured")
+        return jsonify({"error": "Service misconfigured"}), 503
+    if not hmac.compare_digest(expected_token, request.args.get("token", "")):
         print("[Auth] Rejected unauthenticated /toggle request")
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -959,6 +963,16 @@ def toggle_account():
 @app.route("/registry", methods=["GET"])
 def view_registry():
     """Debug endpoint — returns the full trade registry."""
+    # Webhook Authentication
+    import hmac
+    expected_token = os.environ.get("WEBHOOK_SECRET")
+    if not expected_token:
+        print("[Auth] CRITICAL: WEBHOOK_SECRET not configured")
+        return jsonify({"error": "Service misconfigured"}), 503
+    if not hmac.compare_digest(expected_token, request.args.get("token", "")):
+        print("[Auth] Rejected unauthenticated /registry request")
+        return jsonify({"error": "Unauthorized"}), 401
+
     status_filter = request.args.get("status")  # ?status=open or ?status=closed
     reg = _load_registry()
     if status_filter:
@@ -1086,8 +1100,12 @@ def resolve_offset(symbol, side, target_type, data, price):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     # Webhook Authentication
+    import hmac
     expected_token = os.environ.get("WEBHOOK_SECRET")
-    if expected_token and request.args.get("token") != expected_token:
+    if not expected_token:
+        print("[Auth] CRITICAL: WEBHOOK_SECRET not configured")
+        return jsonify({"error": "Service misconfigured"}), 503
+    if not hmac.compare_digest(expected_token, request.args.get("token", "")):
         print("[Auth] Rejected unauthenticated /webhook request")
         return jsonify({"error": "Unauthorized"}), 401
 
