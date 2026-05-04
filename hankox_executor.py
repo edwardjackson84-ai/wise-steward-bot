@@ -289,14 +289,14 @@ def authenticate_tradelocker(config):
         "server": config["server"]
     }
     print(f"[{config['name']}] Authenticating via TradeLocker REST...")
-    resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"})
+    resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
     if not resp.ok:
         raise Exception(f"TradeLocker Auth failed: {resp.text}")
     token = resp.json().get("accessToken")
     acc_id = config.get("account_id")
     if not acc_id:
         acc_url = f"{config['api_url']}/trade/accounts"
-        acc_resp = requests.get(acc_url, headers={"Authorization": f"Bearer {token}"})
+        acc_resp = requests.get(acc_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
         if acc_resp.ok:
             accounts = acc_resp.json().get("accounts", [])
             if accounts:
@@ -315,14 +315,14 @@ def authenticate_hankotrade(config):
         'Referer': 'https://trade.hankotrade.com/'
     }
     print(f"[{config['name']}] Authenticating via Hanko X Specific API...")
-    resp = requests.post(config["auth_url"], json=login_data, headers=headers)
+    resp = requests.post(config["auth_url"], json=login_data, headers=headers, timeout=10)
     if not resp.ok:
         raise Exception(f"Hanko Auth failed: {resp.text}")
     token = resp.json().get('data', {}).get('user', {}).get('token')
     if not token:
         raise Exception("No token received from Hanko login.")
     headers['Authorization'] = f'Bearer {token}'
-    acc_resp = requests.post(config["acc_info_url"], json={}, headers=headers)
+    acc_resp = requests.post(config["acc_info_url"], json={}, headers=headers, timeout=10)
     acc_id = acc_resp.json().get('data', {}).get('ACCOUNT_ID') if acc_resp.ok else None
     return token, acc_id
 
@@ -393,7 +393,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         route_id = meta["routeId"]
     else:
         inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
-        inst_resp = requests.get(inst_url, headers=headers)
+        inst_resp = requests.get(inst_url, headers=headers, timeout=10)
         if inst_resp.ok:
             data = inst_resp.json()
             inst_list = data.get("d", []) if isinstance(data, dict) else data
@@ -410,7 +410,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                             route_id = r.get("id")
                             real_inst_id = inst.get("tradableInstrumentId")
                             detail_url = f"{api_url}/trade/instruments/{real_inst_id}?routeId={route_id}"
-                            det_resp = requests.get(detail_url, headers=headers)
+                            det_resp = requests.get(detail_url, headers=headers, timeout=10)
                             schedule = det_resp.json().get("d", {}).get("tickSize", []) if det_resp.ok else []
                             meta = {"routeId": route_id, "tickSizeSchedule": schedule}
                             _ROUTE_CACHE[route_cache_key] = meta
@@ -508,7 +508,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         payload["routeId"] = route_id
 
     print(f"[{env_name}] REST Open Order Payload: {json.dumps(payload)}")
-    resp = requests.post(order_url, json=payload, headers=headers)
+    resp = requests.post(order_url, json=payload, headers=headers, timeout=10)
 
     if resp.ok:
         resp_data = resp.json()
@@ -546,7 +546,7 @@ def fetch_tl_positions(token, acc_id, acc_num, api_url, env_name):
         "Authorization": f"Bearer {token}",
         "accNum": str(acc_num)
     }
-    resp = requests.get(pos_url, headers=headers)
+    resp = requests.get(pos_url, headers=headers, timeout=10)
     if resp.ok:
         data = resp.json()
         # TradeLocker wraps positions in different keys depending on version
@@ -575,7 +575,7 @@ def close_tl_position(token, acc_id, acc_num, api_url, env_name, position_id, qt
     payload = {"qty": float(qty)}
 
     print(f"[{env_name}] Closing position {position_id} qty={qty}")
-    resp = requests.delete(close_url, json=payload, headers=headers)
+    resp = requests.delete(close_url, json=payload, headers=headers, timeout=10)
 
     if resp.ok:
         print(f"[{env_name}] Position {position_id} closed successfully: {resp.text}")
@@ -929,6 +929,12 @@ def generate_trade_id(signal, symbol, timeframe=""):
 
 @app.route("/toggle", methods=["POST"])
 def toggle_account():
+    # Webhook Authentication
+    expected_token = os.environ.get("WEBHOOK_SECRET")
+    if expected_token and request.args.get("token") != expected_token:
+        print("[Auth] Rejected unauthenticated /toggle request")
+        return jsonify({"error": "Unauthorized"}), 401
+
     data = request.json
     env_name = data.get("env_name")
     is_active = data.get("active")
@@ -1079,6 +1085,12 @@ def resolve_offset(symbol, side, target_type, data, price):
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    # Webhook Authentication
+    expected_token = os.environ.get("WEBHOOK_SECRET")
+    if expected_token and request.args.get("token") != expected_token:
+        print("[Auth] Rejected unauthenticated /webhook request")
+        return jsonify({"error": "Unauthorized"}), 401
+
     if not (request.is_json or request.content_type == 'text/plain'):
         return jsonify({"status": "error", "message": "Unsupported Media Type"}), 415
 

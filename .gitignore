@@ -3,3 +3,16 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Runtime state & secrets
+*.env
+.env.*
+journal/
+pending_alerts/
+*.log
+trade_registry.json
+toggles.json
+dump.json
+daily_alignment.json
+reports/
+
