@@ -400,7 +400,10 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
             if isinstance(inst_list, dict) and "instruments" in inst_list:
                 inst_list = inst_list["instruments"]
             for inst in inst_list:
-                if str(inst.get("tradableInstrumentId")) == str(inst_id) or str(inst.get("name")) == mapped_symbol:
+                inst_name = str(inst.get("name", ""))
+                # Match by explicit ID, exact name, OR broker's '+'-suffixed name (e.g. E8 'EURUSD+')
+                name_match = (inst_name == mapped_symbol or inst_name == mapped_symbol + "+")
+                if str(inst.get("tradableInstrumentId")) == str(inst_id) or name_match:
                     routes = inst.get("routes", [])
                     for r in routes:
                         if r.get("type") == "TRADE":
@@ -433,6 +436,16 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         raise ValueError(
             f"SANITY: tp_distance={tp} exceeds {asset_class} max={max_dist*2} for {mapped_symbol}"
         )
+
+    # TradeLocker REST API only accepts stopLossType in {"offset", "absolute"}.
+    # Native trailing stops are NOT supported at the order level — degrade gracefully.
+    if sl_type == "trailing":
+        print(
+            f"[{env_name}] [TRAILING DEGRADE] TradeLocker does not support native trailing stops. "
+            f"Converting trail_dist={sl} to static 'offset' SL. "
+            f"Wire market_sentry.py to re-trail dynamically, or update Pine to use a static SL."
+        )
+        sl_type = "offset"
 
     if sl_type == "offset" or tp_type == "offset":
         schedule = meta.get("tickSizeSchedule") if meta else None
