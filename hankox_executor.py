@@ -437,17 +437,9 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
             f"SANITY: tp_distance={tp} exceeds {asset_class} max={max_dist*2} for {mapped_symbol}"
         )
 
-    # TradeLocker REST API only accepts stopLossType in {"offset", "absolute"}.
-    # Native trailing stops are NOT supported at the order level — degrade gracefully.
-    if sl_type == "trailing":
-        print(
-            f"[{env_name}] [TRAILING DEGRADE] TradeLocker does not support native trailing stops. "
-            f"Converting trail_dist={sl} to static 'offset' SL. "
-            f"Wire market_sentry.py to re-trail dynamically, or update Pine to use a static SL."
-        )
-        sl_type = "offset"
-
-    if sl_type == "offset" or tp_type == "offset":
+    # TradeLocker REST API requires stopLossType="offset" for both static and trailing stops.
+    # The trailing mechanism is activated by passing "trStopOffset" in the payload (handled below).
+    if sl_type == "trailing" or sl_type == "offset" or tp_type == "offset":
         schedule = meta.get("tickSizeSchedule") if meta else None
         if not schedule:
             raise RuntimeError(f"CRITICAL: tickSize schedule missing for {mapped_symbol} on {env_name}")
@@ -505,6 +497,13 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         "stopLoss": sl_val,
         "takeProfit": tp_val
     }
+
+    # TradeLocker implements trailing stops by setting stopLossType to "offset"
+    # and passing the trail distance in ticks via "trStopOffset".
+    if sl_type == "trailing":
+        payload["stopLossType"] = "offset"
+        payload["trStopOffset"] = sl_val
+        print(f"[{env_name}] [TRAILING STOP] Attached trStopOffset={sl_val} ticks")
     if route_id:
         payload["routeId"] = route_id
 
