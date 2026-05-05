@@ -151,64 +151,144 @@ _ROUTE_CACHE = {}
 REGISTRY_PATH = os.path.join(script_dir, "trade_registry.json")
 _registry_lock = threading.Lock()
 
+def _migrate_legacy_entry(trade_id, entry):
+    """Convert a flat legacy entry to the dispatches shape. No-op if already migrated."""
+    if "dispatches" in entry:
+        return entry
+    env = entry.get("env", "unknown")
+    legacy_status = entry.get("status", "open")
+    return {
+        "schema_version": 1,
+        "trade_id": trade_id,
+        "symbol": entry.get("symbol"),
+        "side": entry.get("side"),
+        "qty": entry.get("qty"),
+        "signal": entry.get("signal"),
+        "created_at": entry.get("opened_at"),
+        "dispatches": {
+            env: {
+                "status": "open" if legacy_status == "open" else "closed",
+                "broker_order_id": entry.get("broker_order_id"),
+                "tl_position_id": entry.get("tl_position_id"),
+                "attempted_at": entry.get("opened_at"),
+                "filled_at":    entry.get("opened_at"),
+                "closed_at":    entry.get("closed_at"),
+                "failure_reason": None,
+            }
+        }
+    }
+
 def _load_registry():
-    if os.path.exists(REGISTRY_PATH):
-        try:
-            with open(REGISTRY_PATH, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[Registry] Load error: {e}")
-    return {}
+    if not os.path.exists(REGISTRY_PATH):
+        return {}
+    try:
+        with open(REGISTRY_PATH) as f:
+            reg = json.load(f)
+        return {tid: _migrate_legacy_entry(tid, e) for tid, e in reg.items()}
+    except Exception as e:
+        print(f"[Registry] Load error: {e}")
+        return {}
 
 def _save_registry(registry):
+    """Atomic write: tmp → fsync → replace. Survives crashes mid-write."""
+    tmp = REGISTRY_PATH + ".tmp"
     try:
-        with open(REGISTRY_PATH, "w") as f:
+        with open(tmp, "w") as f:
             json.dump(registry, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, REGISTRY_PATH)
     except Exception as e:
         print(f"[Registry] Save error: {e}")
 
-def registry_add(trade_id, symbol, side, qty, signal, env_name, broker_order_id=None):
+def registry_add_pending(trade_id, symbol, side, qty, signal, env_name):
+    """Create or extend a registry entry with a pending dispatch for one broker."""
+    now = datetime.utcnow().isoformat()
     with _registry_lock:
         reg = _load_registry()
-        reg[trade_id] = {
-            "symbol":          symbol,
-            "side":            side,
-            "qty":             qty,
-            "signal":          signal,
-            "env":             env_name,
-            "broker_order_id": broker_order_id,
-            "tl_position_id":  None,
-            "opened_at":       datetime.utcnow().isoformat(),
-            "status":          "open"
+        if trade_id not in reg:
+            reg[trade_id] = {
+                "schema_version": 1,
+                "trade_id": trade_id,
+                "symbol": symbol, "side": side, "qty": qty, "signal": signal,
+                "created_at": now,
+                "dispatches": {},
+            }
+        reg[trade_id]["dispatches"][env_name] = {
+            "status": "pending",
+            "broker_order_id": None,
+            "tl_position_id": None,
+            "attempted_at": now,
+            "filled_at": None,
+            "closed_at": None,
+            "failure_reason": None,
         }
         _save_registry(reg)
-        print(f"[Registry] Saved trade {trade_id}: {side} {qty} {symbol} on {env_name}")
+        print(f"[Registry] PENDING {trade_id} on {env_name}")
 
-def registry_mark_closed(trade_id):
+def registry_mark_filled(trade_id, env_name, broker_order_id):
     with _registry_lock:
         reg = _load_registry()
-        if trade_id in reg:
-            reg[trade_id]["status"] = "closed"
-            reg[trade_id]["closed_at"] = datetime.utcnow().isoformat()
+        if trade_id in reg and env_name in reg[trade_id]["dispatches"]:
+            d = reg[trade_id]["dispatches"][env_name]
+            d["status"] = "open"
+            d["broker_order_id"] = broker_order_id
+            d["filled_at"] = datetime.utcnow().isoformat()
             _save_registry(reg)
-            print(f"[Registry] Marked {trade_id} as closed")
+            print(f"[Registry] FILLED {trade_id} on {env_name} (broker_id={broker_order_id})")
+
+def registry_mark_failed(trade_id, env_name, reason):
+    """Mark a dispatch failed. Creates a stub entry if the trade was never pending."""
+    now = datetime.utcnow().isoformat()
+    with _registry_lock:
+        reg = _load_registry()
+        if trade_id not in reg:
+            reg[trade_id] = {
+                "schema_version": 1, "trade_id": trade_id,
+                "symbol": None, "side": None, "qty": None, "signal": None,
+                "created_at": now, "dispatches": {},
+            }
+        if env_name not in reg[trade_id]["dispatches"]:
+            reg[trade_id]["dispatches"][env_name] = {
+                "status": "failed", "broker_order_id": None, "tl_position_id": None,
+                "attempted_at": now, "filled_at": None, "closed_at": None,
+                "failed_at": now, "failure_reason": str(reason)[:500],
+            }
+        else:
+            d = reg[trade_id]["dispatches"][env_name]
+            d["status"] = "failed"
+            d["failed_at"] = now
+            d["failure_reason"] = str(reason)[:500]
+        _save_registry(reg)
+        print(f"[Registry] FAILED {trade_id} on {env_name}: {reason}")
+
+def registry_mark_closed(trade_id, env_name=None):
+    """Mark dispatches closed. env_name=None closes all open dispatches for this trade."""
+    with _registry_lock:
+        reg = _load_registry()
+        if trade_id not in reg:
+            return
+        now = datetime.utcnow().isoformat()
+        for env, d in reg[trade_id]["dispatches"].items():
+            if env_name is None or env == env_name:
+                if d["status"] == "open":
+                    d["status"] = "closed"
+                    d["closed_at"] = now
+        _save_registry(reg)
+        print(f"[Registry] CLOSED {trade_id} on {env_name or 'all envs'}")
 
 def registry_get_open(symbol, side, env_name=None):
-    """
-    Returns a list of open trades matching symbol + side (and optionally env).
-    Used when no trade_id is provided to find the oldest matching open position.
-    """
+    """Return [(trade_id, env, dispatch), ...] for open dispatches matching filters, FIFO."""
     with _registry_lock:
         reg = _load_registry()
     matches = []
     for tid, entry in reg.items():
-        if (entry["symbol"] == symbol
-                and entry["side"] == side
-                and entry["status"] == "open"):
-            if env_name is None or entry["env"] == env_name:
-                matches.append((tid, entry))
-    # Sort oldest first so FIFO closing behaviour
-    matches.sort(key=lambda x: x[1].get("opened_at", ""))
+        if entry.get("symbol") != symbol or entry.get("side") != side:
+            continue
+        for env, d in entry.get("dispatches", {}).items():
+            if d["status"] == "open" and (env_name is None or env == env_name):
+                matches.append((tid, env, d))
+    matches.sort(key=lambda x: x[2].get("attempted_at", ""))
     return matches
 
 def registry_get(trade_id):
@@ -529,16 +609,15 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
             or str(resp_data.get("data", {}).get("orderId", ""))
         )
 
-        # Save to registry immediately
         if trade_id:
-            registry_add(trade_id, mapped_symbol, side_tl, qty,
-                         signal="webhook", env_name=env_name,
-                         broker_order_id=broker_order_id)
+            registry_mark_filled(trade_id, env_name, broker_order_id or "unknown")
 
         return broker_order_id or "unknown"
     else:
         print(f"[{env_name}] REST Order Failed: {resp.text}")
         notify_telegram(f"❌ {env_name} order rejected: {mapped_symbol} {side} {qty}\n{resp.text[:200]}")
+        if trade_id:
+            registry_mark_failed(trade_id, env_name, f"Order rejected ({resp.status_code}): {resp.text[:200]}")
         return None
 
 # ======================================================================
@@ -626,14 +705,9 @@ def find_tl_position_by_order(positions, broker_order_id, symbol, side):
 
     return None
 
-def close_tradelocker_trade(config, trade_id, entry):
+def close_tradelocker_trade(config, trade_id, entry, dispatch):
     """
-    Main close logic for a single TradeLocker trade.
-    1. Authenticates
-    2. Fetches open positions
-    3. Matches the specific position
-    4. Closes it
-    5. Updates registry
+    Main close logic for a single TradeLocker trade dispatch.
     """
     try:
         token, acc_id, acc_num = authenticate_tradelocker(config)
@@ -646,7 +720,7 @@ def close_tradelocker_trade(config, trade_id, entry):
         # Determine the matching side (we're closing, so look for the open side)
         open_side = entry["side"]  # "buy" or "sell"
         symbol = entry["symbol"]
-        broker_order_id = entry.get("broker_order_id")
+        broker_order_id = dispatch.get("broker_order_id")
         qty = entry["qty"]
 
         position = find_tl_position_by_order(positions, broker_order_id, symbol, open_side)
@@ -654,7 +728,7 @@ def close_tradelocker_trade(config, trade_id, entry):
         if not position:
             print(f"[{config['name']}] Could not find matching position for trade {trade_id} "
                   f"({symbol} {open_side}). It may already be closed.")
-            registry_mark_closed(trade_id)
+            registry_mark_closed(trade_id, config["name"])
             return False
 
         position_id = position.get("id") or position.get("positionId")
@@ -663,7 +737,7 @@ def close_tradelocker_trade(config, trade_id, entry):
         success = close_tl_position(token, acc_id, acc_num, config["api_url"],
                                      config["name"], position_id, pos_qty)
         if success:
-            registry_mark_closed(trade_id)
+            registry_mark_closed(trade_id, config["name"])
 
         return success
 
@@ -757,6 +831,8 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
                                     sl=0, tp=0, trade_id=None, signal="", sl_type="offset", tp_type="offset"):
     tasks = []
     for config in active_configs:
+        if trade_id:
+            registry_add_pending(trade_id, symbol, side, qty, signal, config["name"])
         try:
             if config["type"] == "hankotrade":
                 token, acc_id = authenticate_hankotrade(config)
@@ -764,7 +840,6 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
                     execute_trade_ws(token, acc_id, symbol, side, qty,
                                      config["ws_url"], config["name"], sl, tp)
                 )
-                # Hanko: register with no broker_order_id (WS doesn't return it easily)
                 tasks.append({"env": config["name"], "task": task,
                                "type": "hankotrade", "trade_id": trade_id})
             else:
@@ -779,6 +854,8 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
         except Exception as e:
             print(f"[{config['name']}] Multi-Routing Fail: {e}")
             notify_telegram(f"❌ {config['name']} multi-routing fail: {e}")
+            if trade_id:
+                registry_mark_failed(trade_id, config["name"], f"Setup error: {e}")
 
     results = {}
     for t in tasks:
@@ -787,18 +864,19 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
             success = bool(result)
             results[t["env"]] = success
 
-            # For Hanko (no order ID returned), register now with placeholder
-            if t["type"] == "hankotrade" and success and t["trade_id"]:
-                base_symbol = SYMBOL_MAP.get(symbol.upper(), symbol.upper())
-                side_norm = "buy" if side.lower() in ("buy","long") else "sell"
-                registry_add(t["trade_id"], base_symbol, side_norm, qty,
-                             signal=signal, env_name=t["env"],
-                             broker_order_id="hanko_ws")
+            # For Hanko (no order ID returned), mark filled or failed
+            if t["type"] == "hankotrade" and t["trade_id"]:
+                if success:
+                    registry_mark_filled(t["trade_id"], t["env"], "hanko_ws")
+                else:
+                    registry_mark_failed(t["trade_id"], t["env"], "WebSocket execute failed")
 
             status = "SUCCESS" if success else "FAILED"
             print(f"[{t['env']}] Global Routing Result: {status}")
         except Exception as e:
             print(f"[{t['env']}] Task Error: {e}")
+            if t.get("trade_id"):
+                registry_mark_failed(t["trade_id"], t["env"], f"Task Exception: {e}")
             results[t["env"]] = False
 
     return results
@@ -828,8 +906,7 @@ def place_market_orders_sync(active_configs, symbol, side, qty,
 
 def close_specific_trade(active_configs, trade_id):
     """
-    Looks up a trade_id in the registry and closes the matching
-    TradeLocker position. Hanko closes fall back to netting (unchanged).
+    Looks up a trade_id in the registry and closes all matching open dispatches.
     Returns True if at least one broker closed successfully.
     """
     entry = registry_get(trade_id)
@@ -837,27 +914,33 @@ def close_specific_trade(active_configs, trade_id):
         print(f"[Registry] trade_id '{trade_id}' not found in registry")
         return False
 
-    if entry["status"] == "closed":
-        print(f"[Registry] trade_id '{trade_id}' is already marked closed — skipping")
+    dispatches = entry.get("dispatches", {})
+    if not dispatches:
+        print(f"[Registry] trade_id '{trade_id}' has no dispatches")
         return False
 
-    env_name = entry["env"]
     success = False
-
-    for config in active_configs:
-        if config["name"] != env_name:
+    
+    for env_name, dispatch in dispatches.items():
+        if dispatch.get("status") != "open":
+            continue
+            
+        matching_config = next((c for c in active_configs if c["name"] == env_name), None)
+        if not matching_config:
+            print(f"[Registry] Skipping close for {trade_id} on {env_name}: config not active")
             continue
 
-        if config["type"] == "tradelocker":
+        if matching_config["type"] == "tradelocker":
             print(f"[Registry] Closing TL trade {trade_id} on {env_name}")
-            success = close_tradelocker_trade(config, trade_id, entry)
+            if close_tradelocker_trade(matching_config, trade_id, entry, dispatch):
+                success = True
         else:
             # Hanko fallback: net out with opposite order
             print(f"[Registry] Hanko fallback net-close for {trade_id} on {env_name}")
             close_side = "sell" if entry["side"] == "buy" else "buy"
-            place_market_orders_sync([config], entry["symbol"],
+            place_market_orders_sync([matching_config], entry["symbol"],
                                       close_side, entry["qty"], 0, 0)
-            registry_mark_closed(trade_id)
+            registry_mark_closed(trade_id, env_name)
             success = True
 
     return success
@@ -896,8 +979,8 @@ def close_by_symbol_side_fifo(active_configs, symbol, action):
         return False
 
     # Close the oldest open match
-    trade_id, entry = matches[0]
-    print(f"[Close FIFO] Closing oldest open trade {trade_id} for {mapped_symbol} {open_side}")
+    trade_id, env_name, dispatch = matches[0]
+    print(f"[Close FIFO] Closing oldest open trade {trade_id} for {mapped_symbol} {open_side} on {env_name}")
     return close_specific_trade(active_configs, trade_id)
 
 # ======================================================================
@@ -996,10 +1079,10 @@ def view_registry():
         print("[Auth] Rejected unauthenticated /registry request")
         return jsonify({"error": "Unauthorized"}), 401
 
-    status_filter = request.args.get("status")  # ?status=open or ?status=closed
+    trade_id_filter = request.args.get("trade_id")
     reg = _load_registry()
-    if status_filter:
-        reg = {k: v for k, v in reg.items() if v.get("status") == status_filter}
+    if trade_id_filter:
+        reg = {k: v for k, v in reg.items() if k == trade_id_filter}
     return jsonify(reg), 200
 
 def _validate_absolute_direction(symbol, side, target_type, abs_price, price, source):
@@ -1201,25 +1284,30 @@ def webhook():
         if action == "close_all":
             print("CLOSE_ALL triggered — flattening all positions.")
 
-            # Close all open entries in registry for TradeLocker
+            # Close all open dispatches in registry
             with _registry_lock:
                 reg = _load_registry()
-            open_trades = [(tid, e) for tid, e in reg.items() if e["status"] == "open"]
+            open_dispatches = []
+            for tid, e in reg.items():
+                for env_name, d in e.get("dispatches", {}).items():
+                    if d["status"] == "open":
+                        open_dispatches.append((tid, env_name, d, e))
+                        
             tl_configs = get_tradelocker_configs_only(active_configs)
 
-            for trade_id, entry in open_trades:
-                matching = [c for c in tl_configs if c["name"] == entry["env"]]
+            for trade_id, env_name, dispatch, entry in open_dispatches:
+                matching = [c for c in tl_configs if c["name"] == env_name]
                 if matching:
-                    close_tradelocker_trade(matching[0], trade_id, entry)
+                    close_tradelocker_trade(matching[0], trade_id, entry, dispatch)
                 else:
                     # Hanko fallback
                     hanko_cfgs = [c for c in active_configs
-                                  if c["type"] == "hankotrade" and c["name"] == entry["env"]]
+                                  if c["type"] == "hankotrade" and c["name"] == env_name]
                     if hanko_cfgs:
                         close_side = "sell" if entry["side"] == "buy" else "buy"
                         place_market_orders_sync(hanko_cfgs, entry["symbol"],
                                                   close_side, entry["qty"], 0, 0)
-                        registry_mark_closed(trade_id)
+                        registry_mark_closed(trade_id, env_name)
 
             print("CLOSE_ALL sequence completed.")
 
@@ -1319,9 +1407,9 @@ def webhook():
             print(f"Dispatch results: {results}")
 
             return jsonify({
-                "status": "success",
+                "status": "accepted",
                 "trade_id": trade_id,
-                "message": f"Order dispatched — trade_id: {trade_id}"
+                "message": "Dispatch enqueued — check /registry for outcome"
             }), 200
 
         else:
