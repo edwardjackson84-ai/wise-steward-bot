@@ -10,6 +10,7 @@ import requests
 import websockets
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv, dotenv_values
+from notifications import notify_telegram
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(script_dir, ".env.hankolive")
@@ -297,6 +298,7 @@ def authenticate_tradelocker(config):
     print(f"[{config['name']}] Authenticating via TradeLocker REST...")
     resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
     if not resp.ok:
+        notify_telegram(f"❌ {config['name']} auth failed: {resp.text[:200]}")
         raise Exception(f"TradeLocker Auth failed: {resp.text}")
     token = resp.json().get("accessToken")
     acc_id = config.get("account_id")
@@ -323,6 +325,7 @@ def authenticate_hankotrade(config):
     print(f"[{config['name']}] Authenticating via Hanko X Specific API...")
     resp = requests.post(config["auth_url"], json=login_data, headers=headers, timeout=10)
     if not resp.ok:
+        notify_telegram(f"❌ {config['name']} auth failed: {resp.text[:200]}")
         raise Exception(f"Hanko Auth failed: {resp.text}")
     token = resp.json().get('data', {}).get('user', {}).get('token')
     if not token:
@@ -434,11 +437,10 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     asset_class = _get_asset_class(mapped_symbol)
     max_dist = _MAX_ABSOLUTE_DISTANCE[asset_class]
     if sl and float(sl) > max_dist:
-        raise ValueError(
-            f"SANITY: sl_distance={sl} exceeds {asset_class} max={max_dist} for {mapped_symbol}"
-        )
+        notify_telegram(f"⚠️ Sanity bound exceeded: {mapped_symbol} sl={sl} max={max_dist}")
+        raise ValueError(f"SANITY: sl_distance={sl} exceeds {asset_class} max={max_dist} ticks. Assuming misconfigured offset and aborting to protect account.")
     if tp and float(tp) > max_dist * 2:
-        # TODO: revisit if running strategies with R:R > 2:1 — wide TPs will hit this bound.
+        notify_telegram(f"⚠️ Sanity bound exceeded: {mapped_symbol} tp={tp} max={max_dist*2}")
         raise ValueError(
             f"SANITY: tp_distance={tp} exceeds {asset_class} max={max_dist*2} for {mapped_symbol}"
         )
@@ -536,6 +538,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         return broker_order_id or "unknown"
     else:
         print(f"[{env_name}] REST Order Failed: {resp.text}")
+        notify_telegram(f"❌ {env_name} order rejected: {mapped_symbol} {side} {qty}\n{resp.text[:200]}")
         return None
 
 # ======================================================================
@@ -666,6 +669,7 @@ def close_tradelocker_trade(config, trade_id, entry):
 
     except Exception as e:
         print(f"[{config['name']}] close_tradelocker_trade error: {e}")
+        notify_telegram(f"⚠️ Close failed: {trade_id} ({entry['symbol']} {entry['side']})")
         return False
 
 # ======================================================================
@@ -774,6 +778,7 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
                                "type": "tradelocker", "trade_id": trade_id})
         except Exception as e:
             print(f"[{config['name']}] Multi-Routing Fail: {e}")
+            notify_telegram(f"❌ {config['name']} multi-routing fail: {e}")
 
     results = {}
     for t in tasks:
@@ -965,6 +970,18 @@ def toggle_account():
         return jsonify({"status": "success",
                         "message": f"{env_name} set to {is_active}"})
     return jsonify({"status": "error", "message": "Invalid environment file"}), 400
+
+@app.route("/test-notification", methods=["GET", "POST"])
+def test_notification():
+    import hmac
+    expected_token = os.environ.get("WEBHOOK_SECRET")
+    if not expected_token:
+        return jsonify({"error": "Service misconfigured"}), 503
+    if not hmac.compare_digest(expected_token, request.args.get("token", "")):
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    notify_telegram("Test alert from /test-notification")
+    return jsonify({"status": "success", "message": "Telegram notification triggered."})
 
 @app.route("/registry", methods=["GET"])
 def view_registry():
