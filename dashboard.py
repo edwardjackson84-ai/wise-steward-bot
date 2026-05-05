@@ -24,6 +24,100 @@ sys.path.append(BASE_DIR)
 from fetch_performance import get_strategy_performance
 from geopolitics_engine import fetch_world_news_rss, analyze_geopolitics
 
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+EXECUTOR_BASE = os.environ.get("EXECUTOR_BASE_URL", "https://wise-steward.onrender.com")
+
+@st.cache_data(ttl=15)
+def fetch_registry():
+    if not WEBHOOK_SECRET:
+        st.error("WEBHOOK_SECRET not configured in dashboard environment")
+        return {}
+    try:
+        resp = requests.get(f"{EXECUTOR_BASE}/registry",
+                            params={"token": WEBHOOK_SECRET}, timeout=10)
+        if resp.ok:
+            return resp.json()
+        st.error(f"Registry fetch failed: {resp.status_code}")
+        return {}
+    except Exception as e:
+        st.error(f"Registry unreachable: {e}")
+        return {}
+
+def flatten_dispatches(reg):
+    """Flatten nested registry into one row per (trade_id, env) dispatch."""
+    rows = []
+    for tid, entry in reg.items():
+        for env_name, d in entry.get("dispatches", {}).items():
+            rows.append({
+                "trade_id": tid,
+                "symbol": entry.get("symbol"),
+                "side": entry.get("side"),
+                "qty": entry.get("qty"),
+                "env": env_name,
+                "status": d.get("status"),
+                "attempted_at": d.get("attempted_at"),
+                "filled_at": d.get("filled_at"),
+                "failed_at": d.get("failed_at"),
+                "closed_at": d.get("closed_at"),
+                "broker_order_id": d.get("broker_order_id"),
+                "failure_reason": d.get("failure_reason"),
+            })
+    return rows
+
+def render_dispatch_monitor():
+    st.header("📊 Dispatch Monitor")
+    reg = fetch_registry()
+    rows = flatten_dispatches(reg)
+    now = datetime.utcnow()
+    
+    # Categorize
+    stuck_pending = []
+    recent_failures = []
+    open_trades = []
+    for r in rows:
+        if r["status"] == "pending":
+            if r["attempted_at"]:
+                attempted = datetime.fromisoformat(r["attempted_at"])
+                age = (now - attempted).total_seconds()
+                if age > 60:
+                    r["age_seconds"] = int(age)
+                    stuck_pending.append(r)
+        elif r["status"] == "failed" and r["failed_at"]:
+            failed = datetime.fromisoformat(r["failed_at"])
+            if (now - failed).total_seconds() < 24 * 3600:
+                recent_failures.append(r)
+        elif r["status"] == "open":
+            open_trades.append(r)
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🟡 Stuck Pending", len(stuck_pending),
+                delta=None if len(stuck_pending) == 0 else f"+{len(stuck_pending)}",
+                delta_color="inverse")
+    col2.metric("❌ Failures (24h)", len(recent_failures))
+    col3.metric("✅ Healthy Open", len(open_trades))
+    
+    if stuck_pending:
+        st.subheader("⚠️ Stuck Pending Dispatches")
+        st.caption("These dispatches have been in `pending` for >60s. The broker likely never responded.")
+        st.dataframe(pd.DataFrame(stuck_pending)[
+            ["trade_id", "symbol", "side", "qty", "env", "attempted_at", "age_seconds"]
+        ])
+    
+    if recent_failures:
+        st.subheader("❌ Recent Failures (24h)")
+        df = pd.DataFrame(recent_failures)
+        env_filter = st.multiselect("Filter by env", options=df["env"].unique(),
+                                     default=df["env"].unique())
+        st.dataframe(df[df["env"].isin(env_filter)][
+            ["trade_id", "symbol", "side", "env", "failed_at", "failure_reason"]
+        ])
+    
+    if open_trades:
+        st.subheader("✅ Currently Open")
+        st.dataframe(pd.DataFrame(open_trades)[
+            ["trade_id", "symbol", "side", "qty", "env", "filled_at", "broker_order_id"]
+        ])
+
 # Ensure directories exist
 for directory in [ALERTS_DIR, JOURNAL_DIR, REPORTS_DIR]:
     if not os.path.exists(directory):
@@ -194,7 +288,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Live Sentry Monitor", "Economic Calendar", "Global Chessboard (AI)", "Visual Journal", "Performance Reports"])
+page = st.sidebar.radio("Go to", ["Live Sentry Monitor", "Dispatch Monitor", "Economic Calendar", "Global Chessboard (AI)", "Visual Journal", "Performance Reports"])
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("---")
@@ -252,10 +346,11 @@ for b_name, b_env in broker_options.items():
     if new_active_status != is_active:
         import requests
         try:
-            req = requests.post("https://wise-steward.onrender.com/toggle", json={
+            req = requests.post("https://wise-steward.onrender.com/toggle",
+                                params={"token": WEBHOOK_SECRET}, json={
                 "env_name": b_env,
                 "active": new_active_status
-            }, timeout=5)
+            }, timeout=10)
             if req.ok:
                 try: st.toast(f"Live Sync: {b_name} {'ON' if new_active_status else 'OFF'}", icon="✅")
                 except: pass
@@ -685,6 +780,9 @@ if page == "Live Sentry Monitor":
             
             with st.expander(f"Alert {len(alerts_data)-idx}: {symbol} | Action: {action} | {timestamp}"):
                 st.json(payload)
+
+elif page == "Dispatch Monitor":
+    render_dispatch_monitor()
 
 elif page == "Economic Calendar":
     st.header("📅 Economic Calendar (This Week)")
