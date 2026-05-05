@@ -1165,43 +1165,12 @@ def resolve_offset(symbol, side, target_type, data, price):
         print(f"[PAYLOAD CLASSIFY] {symbol} {side} sl_unit={sl_unit} (no sl_type) -> dist={dist}")
         return dist
 
-    # From here the heuristic needs price as an anchor — guard now
-    if not price or price <= 0:
-        raise ValueError(
-            f"Cannot resolve {target_type}={value} for {symbol}: "
-            f"entry price missing. Add \"price\": {{{{close}}}} to your Pine alert "
-            f"or set sl_unit/sl_type to skip the heuristic."
-        )
-
-    # Priority 4: Heuristic — ONLY fires when no explicit unit info is present
-    is_absolute_candidate = False
-    if target_type == 'sl':
-        if side == "buy" and value < price:    is_absolute_candidate = True
-        elif side == "sell" and value > price: is_absolute_candidate = True
-    elif target_type == 'tp':
-        if side == "buy" and value > price:    is_absolute_candidate = True
-        elif side == "sell" and value < price: is_absolute_candidate = True
-
-    if is_absolute_candidate:
-        if value > price * 0.10:
-            inferred = "absolute"
-            _validate_absolute_direction(symbol, side, target_type, value, price, "inferred_absolute")
-            dist = abs(price - value)
-        elif value < price * 0.05:
-            inferred = "offset"
-            dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None -> legacy fallback
-        else:
-            raise ValueError(
-                f"Ambiguous {target_type}={value} for {symbol} {side} at price={price}. "
-                f"Offset zone: <{price*0.05:.5f}, Absolute zone: >{price*0.10:.5f}. "
-                f"Add '{target_type}_unit': 'pips' or 'price' to your Pine alert."
-            )
-    else:
-        inferred = "offset"
-        dist = _convert_to_absolute_distance(value, symbol, sl_unit)  # sl_unit=None -> legacy fallback
-
-    print(f"[PAYLOAD CLASSIFY] {symbol} {side} price={price} {target_type}_in={value} -> inferred={inferred} -> dist={dist}")
-    return dist
+    raise ValueError(
+        f"No SL/TP info in payload for {symbol}. "
+        f"Need one of: sl_points, sl_offset, sl_type, sl_unit, stopLoss. "
+        f"sl_unit is auto-injected for known asset classes — verify {symbol} is in "
+        f"_FOREX_PIP_SYMBOLS, _GOLD_SYMBOLS, _JPY_SYMBOLS, or treated as 'index'."
+    )
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -1294,11 +1263,13 @@ def webhook():
                         open_dispatches.append((tid, env_name, d, e))
                         
             tl_configs = get_tradelocker_configs_only(active_configs)
+            closed_count = 0
 
             for trade_id, env_name, dispatch, entry in open_dispatches:
                 matching = [c for c in tl_configs if c["name"] == env_name]
                 if matching:
-                    close_tradelocker_trade(matching[0], trade_id, entry, dispatch)
+                    if close_tradelocker_trade(matching[0], trade_id, entry, dispatch):
+                        closed_count += 1
                 else:
                     # Hanko fallback
                     hanko_cfgs = [c for c in active_configs
@@ -1308,8 +1279,14 @@ def webhook():
                         place_market_orders_sync(hanko_cfgs, entry["symbol"],
                                                   close_side, entry["qty"], 0, 0)
                         registry_mark_closed(trade_id, env_name)
+                        closed_count += 1
 
             print("CLOSE_ALL sequence completed.")
+            return jsonify({
+                "status": "accepted",
+                "closed_count": closed_count,
+                "message": f"Close-all dispatched: {closed_count} positions transitioned to closed"
+            }), 200
 
         # ==============================================================
         # CLOSE LONG / CLOSE SHORT
@@ -1422,7 +1399,7 @@ def webhook():
         traceback.print_exc(file=sys.stderr)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    return jsonify({"status": "success", "message": "Signal processed"}), 200
+    return jsonify({"status": "accepted", "message": "Signal processed"}), 200
 
 
 if __name__ == "__main__":
