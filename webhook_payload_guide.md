@@ -18,7 +18,8 @@ Use these alerts to physically place trades or close positions on TradeLocker.
   "symbol": "{{ticker}}",
   "timeframe": "{{interval}}",
   "price": "{{close}}",
-  "signal": "long_entry"
+  "signal": "long_entry",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -30,7 +31,8 @@ Use these alerts to physically place trades or close positions on TradeLocker.
   "symbol": "{{ticker}}",
   "timeframe": "{{interval}}",
   "price": "{{close}}",
-  "signal": "short_entry"
+  "signal": "short_entry",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -39,7 +41,8 @@ Use these alerts to physically place trades or close positions on TradeLocker.
 ```json
 {
   "action": "close_all",
-  "message": "Sabbath/End of Week close triggered. All positions liquidated."
+  "message": "Sabbath/End of Week close triggered. All positions liquidated.",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -49,7 +52,8 @@ Use these alerts to physically place trades or close positions on TradeLocker.
 {
   "action": "close_long",
   "symbol": "{{ticker}}",
-  "message": "Long TP/SL Hit"
+  "message": "Long TP/SL Hit",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -59,7 +63,8 @@ Use these alerts to physically place trades or close positions on TradeLocker.
 {
   "action": "close_short",
   "symbol": "{{ticker}}",
-  "message": "Short TP/SL Hit"
+  "message": "Short TP/SL Hit",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -73,7 +78,8 @@ Use these alerts to physically place trades or close positions on TradeLocker.
   "symbol": "{{ticker}}",
   "timeframe": "15",
   "price": "{{close}}",
-  "signal": "visual_verify_bos_up"
+  "signal": "visual_verify_bos_up",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -85,7 +91,8 @@ Use these alerts to physically place trades or close positions on TradeLocker.
   "symbol": "{{ticker}}",
   "timeframe": "15",
   "price": "{{close}}",
-  "signal": "visual_verify_bos_down"
+  "signal": "visual_verify_bos_down",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -104,7 +111,8 @@ Using `"action": "signal"` ensures the webhook server simply records the event w
   "action": "signal",
   "symbol": "{{ticker}}",
   "signal_type": "Bullish FVG Created",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -114,7 +122,8 @@ Using `"action": "signal"` ensures the webhook server simply records the event w
   "action": "signal",
   "symbol": "{{ticker}}",
   "signal_type": "Bearish FVG Created",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -124,7 +133,8 @@ Using `"action": "signal"` ensures the webhook server simply records the event w
   "action": "signal",
   "symbol": "{{ticker}}",
   "signal_type": "Price Entered FVG",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -136,7 +146,8 @@ Using `"action": "signal"` ensures the webhook server simply records the event w
   "action": "signal",
   "symbol": "{{ticker}}",
   "signal_type": "Break of Structure UP",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -146,7 +157,8 @@ Using `"action": "signal"` ensures the webhook server simply records the event w
   "action": "signal",
   "symbol": "{{ticker}}",
   "signal_type": "Break of Structure DOWN",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -156,7 +168,8 @@ Using `"action": "signal"` ensures the webhook server simply records the event w
   "action": "signal",
   "symbol": "{{ticker}}",
   "signal_type": "Change of Character UP",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "bar_time": "{{time}}"
 }
 ```
 
@@ -166,7 +179,8 @@ Using `"action": "signal"` ensures the webhook server simply records the event w
   "action": "signal",
   "symbol": "{{ticker}}",
   "signal_type": "Change of Character DOWN",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "bar_time": "{{time}}"
 }
 ```
 

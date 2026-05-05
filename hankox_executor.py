@@ -18,6 +18,12 @@ if os.path.exists(env_path):
 
 app = Flask(__name__)
 
+# Idempotency / Deduplication state
+# Note: This in-memory state resets on Render restarts. If TradingView retries
+# during the exact window where Render is restarting, the duplicate will slip through.
+_seen_webhooks = {}
+_webhooks_lock = threading.Lock()
+
 SYMBOL_MAP = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
@@ -1114,6 +1120,27 @@ def webhook():
 
     try:
         data = request.get_json(force=True)
+        
+        # Idempotency / Deduplication check
+        symbol = data.get("symbol", data.get("ticker", "UNKNOWN")).upper()
+        action = data.get("action", "").lower()
+        signal = data.get("signal", action)
+        qty = str(data.get("contracts", data.get("qty", "")))
+        bar_time = str(data.get("bar_time", ""))
+        
+        fingerprint = f"{symbol}_{action}_{signal}_{bar_time or qty}"
+        
+        global _seen_webhooks
+        with _webhooks_lock:
+            now = time.time()
+            # Sweep expired entries (TTL = 60s)
+            _seen_webhooks = {k: t for k, t in _seen_webhooks.items() if now - t < 60}
+            if fingerprint in _seen_webhooks:
+                age = now - _seen_webhooks[fingerprint]
+                print(f"[DEDUP] Ignored duplicate fingerprint={fingerprint} age={age:.1f}s")
+                return jsonify({"status": "ignored", "reason": "Duplicate webhook"}), 200
+            _seen_webhooks[fingerprint] = now
+
         print(f"\n--- Wise Steward Webhook ---\nReceived: {data}")
 
         # Set DEBUG_PAYLOAD_CAPTURE=true in Render env vars to log full formatted payload.
