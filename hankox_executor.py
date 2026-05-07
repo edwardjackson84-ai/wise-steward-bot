@@ -316,7 +316,11 @@ def get_active_configs():
     for env_name in env_files:
         ep = os.path.join(script_dir, env_name)
         if not os.path.exists(ep):
-            continue
+            ep_render = os.path.join("/etc/secrets", env_name)
+            if os.path.exists(ep_render):
+                ep = ep_render
+            else:
+                continue
         vals = dotenv_values(ep)
         is_active = vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
         if env_name in toggles:
