@@ -1437,8 +1437,15 @@ def check_startup_health():
     if not configs:
         msg = "CRITICAL: Wise Steward booted with ZERO active accounts. Shutting down worker."
         print(msg)
+        from notifications import notify_telegram
         notify_telegram(f"❌ {msg}")
         sys.exit(3)
+        
+    # Send heartbeat alert on successful boot to verify master process context
+    msg = f"✅ Wise Steward booted successfully with {len(configs)} active account(s)."
+    print(msg)
+    from notifications import notify_telegram
+    notify_telegram(msg)
 
 if __name__ == "__main__":
     check_startup_health()
