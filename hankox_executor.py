@@ -1442,7 +1442,8 @@ def check_startup_health():
         sys.exit(3)
         
     # Send heartbeat alert on successful boot to verify master process context
-    msg = f"✅ Wise Steward booted successfully with {len(configs)} active account(s)."
+    active_names = ", ".join([c.get("name", "Unknown") for c in configs])
+    msg = f"✅ Wise Steward booted successfully with {len(configs)} active account(s): {active_names}"
     print(msg)
     from notifications import notify_telegram
     notify_telegram(msg)
