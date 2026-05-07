@@ -332,6 +332,9 @@ def get_active_configs():
         if ep is None:
             continue
         vals = dotenv_values(ep)
+        raw_active = vals.get("ACCOUNT_ACTIVE", "Missing")
+        print(f"DEBUG: Loaded {ep} | ACCOUNT_ACTIVE={raw_active}")
+        
         is_active = str(vals.get("ACCOUNT_ACTIVE", "false")).strip().lower() == "true"
         if env_name in toggles:
             is_active = bool(toggles[env_name])
