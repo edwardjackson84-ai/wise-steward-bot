@@ -332,7 +332,7 @@ def get_active_configs():
         if ep is None:
             continue
         vals = dotenv_values(ep)
-        is_active = vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
+        is_active = str(vals.get("ACCOUNT_ACTIVE", "false")).strip().lower() == "true"
         if env_name in toggles:
             is_active = bool(toggles[env_name])
         if not is_active:
@@ -1437,6 +1437,19 @@ def check_startup_health():
     if not configs:
         msg = "CRITICAL: Wise Steward booted with ZERO active accounts. Shutting down worker."
         print(msg)
+        print("=== DIAGNOSTIC: FILES IN /etc/secrets ===")
+        try:
+            print(os.listdir("/etc/secrets"))
+        except Exception as e:
+            print(f"Error: {e}")
+            
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        print(f"=== DIAGNOSTIC: FILES IN {script_dir} ===")
+        try:
+            print([f for f in os.listdir(script_dir) if 'env' in f or 'json' in f])
+        except Exception as e:
+            print(f"Error: {e}")
+            
         from notifications import notify_telegram
         notify_telegram(f"❌ {msg}")
         sys.exit(3)
