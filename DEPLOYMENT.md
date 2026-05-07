@@ -34,14 +34,27 @@ Render connects directly to your GitHub account to deploy your code.
     *   **Start Command:** `gunicorn tradelocker_executor:app`
     *   *Note: If you renamed your python file, change `tradelocker_executor` to match your filename.*
 
-## Step 4: Configure Environment Variables (CRITICAL)
-Your Tradelocker credentials are read from environment variables to keep them secure. **Never hardcode your password into the Python script on GitHub.**
+## Step 4: Configure Environment Variables & Secret Files (CRITICAL)
 
-Scroll down to the **Environment Variables** section in Render. Add the following keys and your specific values:
-*   `TRADELOCKER_EMAIL`: Your Hankotrade/Tradelocker email
-*   `TRADELOCKER_PASSWORD`: Your password
-*   `TRADELOCKER_SERVER`: e.g., `Hankotrade-Live`
-*   `TRADELOCKER_API_URL`: `https://api.tradelocker.com`
+The routing engine relies on two types of configuration: **Global Settings** and **Broker Configurations**.
+
+### A. Global Settings (Environment Variables)
+Scroll down to the **Environment Variables** section in Render. Add the following keys:
+*   `TELEGRAM_BOT_TOKEN`: Your Telegram Bot API token
+*   `TELEGRAM_CHAT_ID`: Your Telegram Chat ID
+*   `WEBHOOK_SECRET`: The secret token your TradingView alerts must use
+
+### B. Broker Configurations (Secret Files)
+Broker-specific details and risk parameters are loaded via `.env.*` files (e.g. `.env.atlasdemo`). Because these are ignored by git, you must create them directly in Render:
+1. In Render, go to the **Secret Files** section.
+2. Create a file named exactly after your local file (e.g., `.env.atlasdemo`).
+3. Paste the contents of your local file.
+
+> [!NOTE]
+> **Configuration Lookup Order:** When the script boots, it looks for these files in the following directory order:
+> 1. `$WISE_STEWARD_CONFIG_DIR` (Highest priority, useful for custom deployment paths)
+> 2. The local application root directory (Used for local development)
+> 3. `/etc/secrets/` (Render automatically places Secret Files here)
 
 ## Step 5: Deploy and Get Your Webhook URL
 1. Click **Create Web Service** at the bottom.

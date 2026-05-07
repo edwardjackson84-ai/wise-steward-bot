@@ -25,6 +25,9 @@ app = Flask(__name__)
 _seen_webhooks = {}
 _webhooks_lock = threading.Lock()
 
+_LAST_NO_ACCOUNTS_ALERT = 0.0
+NO_ACCOUNTS_ALERT_COOLDOWN = 300  # 5 minutes
+
 SYMBOL_MAP = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
@@ -313,14 +316,21 @@ def get_active_configs():
 
     env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.e8demo", ".env.e8live", ".env.e8markets", ".env.e8tradelocker"]
 
+    config_dirs = [
+        os.environ.get("WISE_STEWARD_CONFIG_DIR"),
+        script_dir,
+        "/etc/secrets",
+    ]
+    config_dirs = [d for d in config_dirs if d]
+
     for env_name in env_files:
-        ep = os.path.join(script_dir, env_name)
-        if not os.path.exists(ep):
-            ep_render = os.path.join("/etc/secrets", env_name)
-            if os.path.exists(ep_render):
-                ep = ep_render
-            else:
-                continue
+        ep = next(
+            (os.path.join(d, env_name) for d in config_dirs
+             if os.path.exists(os.path.join(d, env_name))),
+            None,
+        )
+        if ep is None:
+            continue
         vals = dotenv_values(ep)
         is_active = vals.get("ACCOUNT_ACTIVE", "false").lower() == "true"
         if env_name in toggles:
@@ -1248,7 +1258,15 @@ def webhook():
 
         active_configs = get_active_configs()
         if not active_configs:
-            print("No active accounts configured.")
+            error_msg = "CRITICAL: Webhook received but zero active accounts configured. Trade dropped."
+            print(error_msg)
+            
+            global _LAST_NO_ACCOUNTS_ALERT
+            now_time = time.time()
+            if now_time - _LAST_NO_ACCOUNTS_ALERT > NO_ACCOUNTS_ALERT_COOLDOWN:
+                notify_telegram(f"❌ {error_msg}")
+                _LAST_NO_ACCOUNTS_ALERT = now_time
+                
             return jsonify({"status": "ignored", "reason": "No active accounts"}), 200
 
         # ==============================================================
@@ -1405,7 +1423,24 @@ def webhook():
 
     return jsonify({"status": "accepted", "message": "Signal processed"}), 200
 
+def check_startup_health():
+    import sys
+    import os
+    # Telegram check
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        print("CRITICAL: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from main environment.")
+        sys.exit(3)
+        
+    configs = get_active_configs()
+    if not configs:
+        msg = "CRITICAL: Wise Steward booted with ZERO active accounts. Shutting down worker."
+        print(msg)
+        notify_telegram(f"❌ {msg}")
+        sys.exit(3)
 
 if __name__ == "__main__":
+    check_startup_health()
     print("Starting Wise Steward Webhook Executor (TradeLocker + Hanko)...")
     app.run(host="0.0.0.0", port=5001)
