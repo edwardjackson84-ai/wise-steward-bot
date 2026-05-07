@@ -21,7 +21,10 @@ from datetime import datetime
 import google.generativeai as genai
 
 sys.path.append(BASE_DIR)
-from fetch_performance import get_strategy_performance
+# from fetch_performance import get_strategy_performance
+def get_strategy_performance():
+    return None
+
 from geopolitics_engine import fetch_world_news_rss, analyze_geopolitics
 
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")

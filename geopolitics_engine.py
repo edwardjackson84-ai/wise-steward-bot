@@ -42,8 +42,8 @@ def analyze_geopolitics(api_key, news_text):
         
     try:
         genai.configure(api_key=api_key)
-        # Using Gemini 1.5 Flash for speed and excellent reasoning
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # Using gemini-1.5-flash for stable reasoning and speed
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
         You are an advanced Geopolitical Game Theory AI, codenamed 'Sovereign'.

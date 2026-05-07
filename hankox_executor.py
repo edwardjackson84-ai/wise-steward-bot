@@ -603,14 +603,16 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     # TradeLocker implements trailing stops by setting stopLossType to "offset"
     # and passing the trail distance in ticks via "trStopOffset".
     if sl_type == "trailing":
-        payload["stopLossType"] = "offset"
+        payload["stopLossType"] = "trailingOffset"
         payload["trStopOffset"] = sl_val
         print(f"[{env_name}] [TRAILING STOP] Attached trStopOffset={sl_val} ticks")
     if route_id:
         payload["routeId"] = route_id
 
-    print(f"[{env_name}] REST Open Order Payload: {json.dumps(payload)}")
+    safe_headers = {k: ("***" if k.lower() == 'authorization' else v) for k, v in headers.items()}
+    print(f"[{env_name}] OUTBOUND REST: URL={order_url} Headers={json.dumps(safe_headers)} Body={json.dumps(payload)}", flush=True)
     resp = requests.post(order_url, json=payload, headers=headers, timeout=10)
+    print(f"[{env_name}] REST RESPONSE: Status={resp.status_code} Body={resp.text}", flush=True)
 
     if resp.ok:
         resp_data = resp.json()
