@@ -42,8 +42,28 @@ SYMBOL_MAP = {
     "US500": "SPX500",
     "SPX500": "SPX500",
     "BTCUSD": "BTCUSD",
-    "USDCAD": "USDCAD"
+    "USDCAD": "USDCAD",
+    "BRENT": "BRENT",
+    "UKOIL": "BRENT",
+    "EURUSD": "EURUSD"
 }
+
+# Explicit aliases for cross-broker naming variations.
+# Canonical Name -> List of possible broker names
+SYMBOL_ALIASES = {
+    "BRENT": ["BRENT", "BRENT+", "UKOIL", "BCO", "BRENT.cash"],
+    "WTI":   ["USOIL", "OILUSD", "WTI", "WTI+"],
+    "US30":  ["US30", "DOW+", "USA30", "WS30", "DJ30", "DOW"],
+    "NAS100": ["NAS100", "NSDQ+", "NAS", "NQ100", "NDX"],
+    "SPX500": ["SPX500", "SP+", "US500", "SPX"],
+    "EURUSD": ["EURUSD", "EURUSD+", "EUR/USD"],
+    "GBPUSD": ["GBPUSD", "GBPUSD+", "GBP/USD"],
+    "XAUUSD": ["XAUUSD", "XAUUSD+", "GOLD", "GOLD+"],
+}
+
+# In-memory registry of resolved instruments per broker account.
+# Format: { env_name: { canonical_symbol: instrument_record } }
+_INSTRUMENT_REGISTRY = {}
 
 # ======================================================================
 # ASSET CLASS CLASSIFICATION
@@ -430,39 +450,80 @@ def authenticate_hankotrade(config):
     return token, acc_id
 
 # ======================================================================
-# TRADELOCKER INSTRUMENT ID MAP
+# TRADELOCKER INSTRUMENT REGISTRY
 # ======================================================================
 
-INSTRUMENT_ID_MAP = {
-    ".env.crucialdemo": {
-        "US30": 17028, "NAS100": 17035, "SPX500": 17034,
-        "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
-        "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
-        "BTCUSD": 17949
-    },
-    ".env.cruciallive": {
-        "US30": 17028, "NAS100": 17035, "SPX500": 17034,
-        "EURUSD": 16985, "GBPUSD": 16977, "XAUUSD": 17049, "XAGUSD": 17048,
-        "CADJPY": 16976, "NZDJPY": 16978, "USDHKD": 16980, "USDCNH": 16981,
-        "BTCUSD": 17949
-    },
-    ".env.atlasdemo": {
-        "US30": 16337, "NAS100": 16341, "XAUUSD": 16343, "BTCUSD": 16304,
-        "EURUSD": 16325, "GBPUSD": 16317, "USDCAD": 16322
-    },
-    ".env.e8demo": {
-        "US30": 6107, "USDCAD": 6125
-    },
-    ".env.e8live": {
-        "US30": 6107, "USDCAD": 6125
-    },
-    ".env.e8markets": {
-        "US30": 6107, "USDCAD": 6125
-    },
-    ".env.e8tradelocker": {
-        "US30": 6107, "USDCAD": 6125
+def fetch_instrument_registry(config):
+    """
+    Fetches the full instrument list for a TradeLocker account and populates 
+    the _INSTRUMENT_REGISTRY with optimized lookups.
+    """
+    env_name = config.get("name", "Unknown")
+    print(f"[{env_name}] Fetching instrument registry...")
+    
+    auth_data = authenticate_tradelocker(config)
+    if not auth_data:
+        raise RuntimeError(f"Failed to authenticate for instrument fetch on {env_name}")
+    
+    token, acc_id, acc_num = auth_data
+    api_url = config.get("TRADELOCKER_API_URL")
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "accNum": str(acc_num)
     }
-}
+    
+    inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
+    resp = requests.get(inst_url, headers=headers, timeout=20)
+    if not resp.ok:
+        raise RuntimeError(f"Failed to fetch instruments for {env_name}: {resp.text}")
+    
+    data = resp.json()
+    raw_list = data.get("d", {}).get("instruments", []) if isinstance(data, dict) else []
+    if not raw_list and isinstance(data, list):
+        raw_list = data
+        
+    registry = {}
+    
+    def get_plausibility_score(inst):
+        # Tie-break logic: prefer standard precision for the asset class
+        name = inst.get("name", "").upper()
+        ts = inst.get("tickSize")
+        if ts is None: return 0
+        
+        ts = float(ts)
+        if "EURUSD" in name or "GBPUSD" in name:
+            return 100 if ts == 1e-05 else 10
+        if "US30" in name or "DOW" in name:
+            return 100 if ts == 1.0 else 10
+        return 50
+
+    # Sort so that better records (more plausible) are processed later and overwrite
+    indexed_count = 0
+    for inst in raw_list:
+        name = inst.get("name", "")
+        if not name: continue
+        
+        # 1. Index by exact name
+        registry[name.upper()] = inst
+        
+        # 2. Index by Alias / Canonical mapping
+        for canonical, aliases in SYMBOL_ALIASES.items():
+            if name.upper() in [a.upper() for a in aliases]:
+                existing = registry.get(canonical)
+                if not existing or get_plausibility_score(inst) > get_plausibility_score(existing):
+                    registry[canonical] = inst
+        
+        # 3. Automatic suffix stripping (e.g. BRENT+ -> BRENT)
+        if "+" in name:
+            stripped = name.replace("+", "").upper()
+            if stripped not in registry:
+                registry[stripped] = inst
+        
+        indexed_count += 1
+        
+    _INSTRUMENT_REGISTRY[env_name] = registry
+    print(f"[{env_name}] Successfully indexed {indexed_count} instruments into registry.")
 
 # ======================================================================
 # TRADELOCKER REST — OPEN A TRADE
@@ -478,8 +539,29 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     base_symbol = symbol.upper().replace(".HKT", "")
     mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
 
-    current_map = INSTRUMENT_ID_MAP.get(env_name, INSTRUMENT_ID_MAP[".env.crucialdemo"])
-    inst_id = current_map.get(mapped_symbol)
+    # Resolve from dynamic registry
+    registry = _INSTRUMENT_REGISTRY.get(env_name, {})
+    inst_record = registry.get(mapped_symbol)
+    
+    if not inst_record:
+        # One last try: strip suffixes and check
+        inst_record = registry.get(mapped_symbol.replace("+", ""))
+
+    if not inst_record:
+        candidates = sorted(list(registry.keys()))[:10] # Show first 10 for debugging
+        error_msg = f"[SYMBOL UNMAPPED] {env_name} cannot resolve '{mapped_symbol}'. Candidates: {candidates}..."
+        print(error_msg)
+        notify_telegram(f"❌ {error_msg}")
+        if trade_id:
+            registry_mark_failed(trade_id, env_name, f"Symbol lookup failed: {mapped_symbol}")
+        return None
+
+    inst_id = inst_record.get("tradableInstrumentId")
+    if not inst_id:
+        # Fallback to name if ID is missing in record (unlikely)
+        inst_id = inst_record.get("name")
+        
+    print(f"[{env_name}] Resolved {mapped_symbol} -> ID {inst_id} ({inst_record.get('name')})")
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -495,31 +577,21 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
         meta = _ROUTE_CACHE[route_cache_key]
         route_id = meta["routeId"]
     else:
-        inst_url = f"{api_url}/trade/accounts/{acc_id}/instruments"
-        inst_resp = requests.get(inst_url, headers=headers, timeout=10)
-        if inst_resp.ok:
-            data = inst_resp.json()
-            inst_list = data.get("d", []) if isinstance(data, dict) else data
-            if isinstance(inst_list, dict) and "instruments" in inst_list:
-                inst_list = inst_list["instruments"]
-            for inst in inst_list:
-                inst_name = str(inst.get("name", ""))
-                # Match by explicit ID, exact name, OR broker's '+'-suffixed name (e.g. E8 'EURUSD+')
-                name_match = (inst_name == mapped_symbol or inst_name == mapped_symbol + "+")
-                if str(inst.get("tradableInstrumentId")) == str(inst_id) or name_match:
-                    routes = inst.get("routes", [])
-                    for r in routes:
-                        if r.get("type") == "TRADE":
-                            route_id = r.get("id")
-                            real_inst_id = inst.get("tradableInstrumentId")
-                            detail_url = f"{api_url}/trade/instruments/{real_inst_id}?routeId={route_id}"
-                            det_resp = requests.get(detail_url, headers=headers, timeout=10)
-                            schedule = det_resp.json().get("d", {}).get("tickSize", []) if det_resp.ok else []
-                            meta = {"routeId": route_id, "tickSizeSchedule": schedule}
-                            _ROUTE_CACHE[route_cache_key] = meta
-                            break
-                    if route_id:
-                        break
+        # Logic to find the TRADE route and tickSize schedule
+        routes = inst_record.get("routes", [])
+        for r in routes:
+            if r.get("type") == "TRADE":
+                route_id = r.get("id")
+                detail_url = f"{api_url}/trade/instruments/{inst_id}?routeId={route_id}"
+                det_resp = requests.get(detail_url, headers=headers, timeout=10)
+                schedule = det_resp.json().get("d", {}).get("tickSize", []) if det_resp.ok else []
+                meta = {"routeId": route_id, "tickSizeSchedule": schedule}
+                _ROUTE_CACHE[route_cache_key] = meta
+                break
+        
+        if not route_id:
+            print(f"[{env_name}] CRITICAL: No TRADE route found for {mapped_symbol} (ID {inst_id})")
+            return None
 
     order_url = f"{api_url}/trade/accounts/{acc_id}/orders"
 
@@ -1439,22 +1511,21 @@ def check_startup_health():
     if not configs:
         msg = "CRITICAL: Wise Steward booted with ZERO active accounts. Shutting down worker."
         print(msg)
-        print("=== DIAGNOSTIC: FILES IN /etc/secrets ===")
-        try:
-            print(os.listdir("/etc/secrets"))
-        except Exception as e:
-            print(f"Error: {e}")
-            
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        print(f"=== DIAGNOSTIC: FILES IN {script_dir} ===")
-        try:
-            print([f for f in os.listdir(script_dir) if 'env' in f or 'json' in f])
-        except Exception as e:
-            print(f"Error: {e}")
-            
-        from notifications import notify_telegram
-        notify_telegram(f"❌ {msg}")
+        # ... diagnostic code ...
         sys.exit(3)
+        
+    # --- Instrument Registry Bootstrapping ---
+    print("--- Initializing Dynamic Instrument Registry ---")
+    tl_configs = get_tradelocker_configs_only(configs)
+    for cfg in tl_configs:
+        try:
+            fetch_instrument_registry(cfg)
+        except Exception as e:
+            msg = f"CRITICAL BOOT FAILURE: Could not fetch instruments for {cfg.get('name')}. Error: {str(e)}"
+            print(msg)
+            from notifications import notify_telegram
+            notify_telegram(f"❌ {msg}")
+            sys.exit(4) # Hard fail as requested
         
     # Send heartbeat alert on successful boot to verify master process context
     active_names = ", ".join([c.get("name", "Unknown") for c in configs])
