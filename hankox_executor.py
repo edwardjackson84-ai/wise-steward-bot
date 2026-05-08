@@ -466,7 +466,7 @@ def fetch_instrument_registry(config):
         raise RuntimeError(f"Failed to authenticate for instrument fetch on {env_name}")
     
     token, acc_id, acc_num = auth_data
-    api_url = config.get("TRADELOCKER_API_URL")
+    api_url = config.get("api_url")
     
     headers = {
         "Authorization": f"Bearer {token}",
