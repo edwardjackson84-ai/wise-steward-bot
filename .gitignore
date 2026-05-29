@@ -16,3 +16,4 @@ dump.json
 daily_alignment.json
 reports/
 
+.venv/

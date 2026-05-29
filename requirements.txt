@@ -4,3 +4,6 @@ gunicorn==21.2.0
 python-dotenv
 streamlit
 websockets
+redis
+google-generativeai
+pandas

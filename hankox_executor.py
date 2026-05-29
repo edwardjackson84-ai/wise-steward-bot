@@ -373,7 +373,8 @@ def get_active_configs():
                 "email": vals.get("HANKOX_EMAIL") or vals.get("HANKOX_LIVE_ACCOUNT_ID") or vals.get("HANKOX_DEMO_ACCOUNT_ID"),
                 "password": vals.get("HANKOX_PASSWORD") or vals.get("HANKOX_LIVE_PASSWORD") or vals.get("HANKOX_DEMO_PASSWORD"),
                 "server": vals.get("HANKOX_SERVER", "Hankotrade-Live" if is_live else "Hankotrade-Demo"),
-                "symbol_suffix": ".HKT"
+                "symbol_suffix": ".HKT",
+                "env_vars": vals
             })
         elif "crucial" in env_name.lower() or "atlas" in env_name.lower() or "e8" in env_name.lower():
             b_type = "tradelocker"
@@ -390,7 +391,8 @@ def get_active_configs():
                 "server": vals.get("TRADELOCKER_SERVER"),
                 "account_id": vals.get("TRADELOCKER_ACCOUNT_ID"),
                 "acc_num": vals.get("TRADELOCKER_ACCNUM", "1" if "e8" in env_name.lower() else vals.get("TRADELOCKER_ACCOUNT_ID")),
-                "symbol_suffix": ""
+                "symbol_suffix": "",
+                "env_vars": vals
             })
 
     return configs
@@ -919,13 +921,23 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
                                     sl=0, tp=0, trade_id=None, signal="", sl_type="offset", tp_type="offset"):
     tasks = []
     for config in active_configs:
+        config_qty = qty
+        if "env_vars" in config:
+            sym_qty = float(config["env_vars"].get(f"LOT_SIZE_{symbol}", 0.0))
+            if sym_qty > 0:
+                config_qty = sym_qty
+            else:
+                base_qty = float(config["env_vars"].get("BASE_LOT_SIZE", 0.0))
+                if base_qty > 0:
+                    config_qty = base_qty
+
         if trade_id:
-            registry_add_pending(trade_id, symbol, side, qty, signal, config["name"])
+            registry_add_pending(trade_id, symbol, side, config_qty, signal, config["name"])
         try:
             if config["type"] == "hankotrade":
                 token, acc_id = authenticate_hankotrade(config)
                 task = asyncio.create_task(
-                    execute_trade_ws(token, acc_id, symbol, side, qty,
+                    execute_trade_ws(token, acc_id, symbol, side, config_qty,
                                      config["ws_url"], config["name"], sl, tp)
                 )
                 tasks.append({"env": config["name"], "task": task,
@@ -933,7 +945,7 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
             else:
                 token, acc_id, acc_num = authenticate_tradelocker(config)
                 task = asyncio.create_task(
-                    execute_trade_rest(token, acc_id, acc_num, symbol, side, qty,
+                    execute_trade_rest(token, acc_id, acc_num, symbol, side, config_qty,
                                        config["api_url"], config["name"],
                                        sl, tp, trade_id, sl_type, tp_type)
                 )
@@ -1287,6 +1299,17 @@ def webhook():
         
         fingerprint = f"{symbol}_{action}_{signal}_{bar_time or qty}"
         
+        # Kill Switch Fast-Fail Check
+        now_ts = time.time()
+        for env_name, state in kill_switch_state.items():
+            if (now_ts - state.get("last_updated", 0)) > 15:
+                print(f"[KillSwitch] CRITICAL: Cache for {env_name} is STALE. Failing closed.")
+                return jsonify({"error": f"Kill switch cache stale for {env_name}. Failsafe active."}), 503
+            if state.get("kill_switch_active"):
+                print(f"[KillSwitch] BLOCKED webhook. Kill switch ACTIVE for {env_name}.")
+                return jsonify({"error": f"Kill switch active for {env_name}"}), 403
+
+        
         global _seen_webhooks
         with _webhooks_lock:
             now = time.time()
@@ -1407,11 +1430,9 @@ def webhook():
         # OPEN A TRADE (buy / sell / long / short / entry)
         # ==============================================================
         elif action in ("buy", "sell", "long", "short", "entry"):
-            qty = float(data.get("contracts", data.get("qty", 0.0)))
-            if qty <= 0:
-                qty = float(os.environ.get(f"LOT_SIZE_{symbol}", 0.0))
-            if qty <= 0:
-                qty = float(os.environ.get("BASE_LOT_SIZE", 0.01))
+            # qty parsed here is the baseline payload quantity. It will be overridden
+            # per-broker dynamically in place_multi_orders_async based on each active config.
+            qty = float(data.get("contracts", data.get("qty", 0.01)))
             if qty <= 0:
                 print(f"Rejecting: resolved lot size is 0")
                 return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
@@ -1496,6 +1517,229 @@ def webhook():
         return jsonify({"status": "error", "message": str(e)}), 500
 
     return jsonify({"status": "accepted", "message": "Signal processed"}), 200
+
+# ======================================================================
+# DAILY LOSS KILL SWITCH DAEMON
+# ======================================================================
+
+kill_switch_state = {}
+_kill_switch_lock = threading.Lock()
+
+def init_redis():
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        print("CRITICAL: REDIS_URL is not set. Failing to boot loudly as per requirements.")
+        import sys
+        sys.exit(1)
+    try:
+        import redis
+        client = redis.from_url(redis_url, decode_responses=True)
+        client.ping()
+        return client
+    except Exception as e:
+        print(f"CRITICAL: Could not connect to Redis at {redis_url}: {e}")
+        import sys
+        sys.exit(1)
+
+redis_client = init_redis()
+
+def get_kill_switch_flag(env_name):
+    try:
+        return redis_client.get(f"kill_switch_{env_name}") == "true"
+    except Exception as e:
+        print(f"[KillSwitch] Redis error reading flag: {e}")
+        return True # Fail closed
+
+def set_kill_switch_flag(env_name, state: bool):
+    try:
+        redis_client.set(f"kill_switch_{env_name}", "true" if state else "false")
+    except Exception as e:
+        print(f"[KillSwitch] Redis error setting flag: {e}")
+
+def get_start_of_day_baseline(env_name):
+    try:
+        v = redis_client.get(f"start_of_day_baseline_{env_name}")
+        return float(v) if v else None
+    except:
+        return None
+
+def set_start_of_day_baseline(env_name, value, ts):
+    try:
+        redis_client.set(f"start_of_day_baseline_{env_name}", str(value))
+        redis_client.set(f"start_of_day_ts_{env_name}", str(ts))
+    except Exception as e:
+        print(f"[KillSwitch] Redis error setting baseline: {e}")
+
+def get_start_of_day_ts(env_name):
+    try:
+        v = redis_client.get(f"start_of_day_ts_{env_name}")
+        return float(v) if v else 0.0
+    except:
+        return 0.0
+
+def _get_midnight_utc_ts():
+    now = datetime.utcnow()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.timestamp()
+
+def flatten_account(config, token, acc_id, acc_num, api_url, env_name):
+    print(f"[{env_name}] [KILL SWITCH] Flattening account...")
+    retries = 3
+    while retries > 0:
+        positions = fetch_tl_positions(token, acc_id, acc_num, api_url, env_name)
+        if not positions:
+            print(f"[{env_name}] [KILL SWITCH] Account confirmed flat.")
+            notify_telegram(f"🛡️ Kill Switch triggered for {env_name}. Account is FLAT.")
+            return True
+        for pos in positions:
+            pos_id = pos.get("id") or pos[0] # Handle dict or array
+            qty = pos.get("qty") or pos[4]
+            close_tl_position(token, acc_id, acc_num, api_url, env_name, pos_id, qty)
+        time.sleep(2)
+        retries -= 1
+    
+    positions = fetch_tl_positions(token, acc_id, acc_num, api_url, env_name)
+    if positions:
+        print(f"[{env_name}] [KILL SWITCH] CRITICAL: Failed to flatten after 3 retries!")
+        notify_telegram(f"🚨 CRITICAL: Kill Switch triggered for {env_name} but FAILED to flatten {len(positions)} positions!")
+        return False
+    return True
+
+def equity_poller_daemon():
+    print("[KillSwitch] Daemon thread started.")
+    # Keep track of tokens per env
+    tokens = {}
+    last_refresh = {}
+    
+    # Let's read config for pct
+    personal_pct_str = os.environ.get("ATLAS_PERSONAL_LOSS_PCT", "0.02")
+    firm_pct_str = os.environ.get("ATLAS_FIRM_LOSS_PCT", "0.03")
+    try:
+        personal_pct = float(personal_pct_str)
+        firm_pct = float(firm_pct_str)
+    except:
+        personal_pct = 0.02
+        firm_pct = 0.03
+        
+    while True:
+        try:
+            configs = get_tradelocker_configs_only(get_active_configs())
+            # For this MVP, we focus on configs that have ATLAS in the name or we apply to all active TradeLocker accounts
+            for config in configs:
+                env_name = config["name"]
+                
+                if "atlas" not in env_name.lower():
+                    continue # Target Atlas for now
+                
+                # Check Token age
+                now_ts = time.time()
+                if env_name not in tokens or (now_ts - last_refresh.get(env_name, 0)) > 3000: # Refresh every 50 mins
+                    try:
+                        token, acc_id, acc_num = authenticate_tradelocker(config)
+                        tokens[env_name] = (token, acc_id, acc_num, config["api_url"])
+                        last_refresh[env_name] = now_ts
+                    except Exception as e:
+                        print(f"[{env_name}] [KillSwitch] Auth failed: {e}")
+                        with _kill_switch_lock:
+                            kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                        continue
+                
+                token, acc_id, acc_num, api_url = tokens[env_name]
+                
+                headers = {"Authorization": f"Bearer {token}", "accNum": str(acc_num)}
+                state_url = f"{api_url}/trade/accounts/{acc_id}/state"
+                resp = requests.get(state_url, headers=headers, timeout=5)
+                
+                if resp.status_code == 401:
+                    # Token expired, force refresh next loop
+                    last_refresh[env_name] = 0
+                    continue
+                elif not resp.ok:
+                    print(f"[{env_name}] [KillSwitch] API Error {resp.status_code}: {resp.text}")
+                    with _kill_switch_lock:
+                        kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                    continue
+                
+                data = resp.json().get("d", {}).get("accountDetailsData", [])
+                if len(data) < 24:
+                    print(f"[{env_name}] [KillSwitch] Unexpected array length: {len(data)}")
+                    with _kill_switch_lock:
+                        kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                    continue
+                    
+                balance = float(data[0])
+                projectedBalance = float(data[1])
+                todayNet = float(data[18])
+                openNetPnL = float(data[23])
+                
+                # Sanity check
+                expected_proj = balance + openNetPnL
+                if abs(projectedBalance - expected_proj) > 1.0 or projectedBalance <= 0:
+                    print(f"[{env_name}] [KillSwitch] Sanity check failed! proj={projectedBalance}, expected={expected_proj}")
+                    with _kill_switch_lock:
+                        kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                    continue
+                
+                # Baseline logic
+                midnight_ts = _get_midnight_utc_ts()
+                stored_ts = get_start_of_day_ts(env_name)
+                
+                if stored_ts < midnight_ts:
+                    # Reset Time! Capture baseline
+                    baseline = max(balance, projectedBalance)
+                    set_start_of_day_baseline(env_name, baseline, now_ts)
+                    set_kill_switch_flag(env_name, False)
+                    print(f"[{env_name}] [KillSwitch] NEW DAY BASELINE CAPTURED: {baseline}")
+                else:
+                    baseline = get_start_of_day_baseline(env_name)
+                    if baseline is None:
+                        # Cold start mid-day
+                        baseline = balance - todayNet
+                        set_start_of_day_baseline(env_name, baseline, now_ts)
+                        print(f"[{env_name}] [KillSwitch] COLD START BASELINE RECONSTRUCTED: {baseline}")
+                
+                # Breach calculation
+                personal_floor = baseline * (1 - personal_pct)
+                firm_floor = baseline * (1 - firm_pct)
+                native_pnl = todayNet + openNetPnL
+                
+                breached = False
+                reason = ""
+                
+                if projectedBalance <= personal_floor:
+                    breached = True
+                    reason = f"Absolute Equity ({projectedBalance}) hit Personal Floor ({personal_floor})"
+                elif native_pnl <= -(baseline * personal_pct):
+                    breached = True
+                    reason = f"Native P&L ({native_pnl}) exceeded limit ({-baseline * personal_pct})"
+                
+                # Update memory cache
+                is_active = get_kill_switch_flag(env_name)
+                
+                with _kill_switch_lock:
+                    kill_switch_state[env_name] = {
+                        "kill_switch_active": is_active or breached,
+                        "last_updated": now_ts,
+                        "fail_closed": False,
+                        "equity": projectedBalance
+                    }
+                
+                if breached and not is_active:
+                    print(f"[{env_name}] [KillSwitch] TRIPPED! {reason}")
+                    set_kill_switch_flag(env_name, True)
+                    # Flatten
+                    flatten_account(config, token, acc_id, acc_num, api_url, env_name)
+                
+        except Exception as e:
+            print(f"[KillSwitch] Unexpected loop error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+        time.sleep(5)
+
+# Start Daemon
+threading.Thread(target=equity_poller_daemon, daemon=True).start()
+
 
 def check_startup_health():
     import sys

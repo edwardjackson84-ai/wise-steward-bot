@@ -394,13 +394,14 @@ if os.path.exists(env_file):
                     pass
 
 # Slider for lot size
-new_lot_size = st.sidebar.slider(
-    "Base Lot Size",
-    min_value=0.01,
-    max_value=5.00,
+new_lot_size = st.sidebar.number_input(
+    "Base Lot Size (0.0 = Use TradingView)",
+    min_value=0.00,
+    max_value=50.00,
     value=current_lot_size,
     step=0.01,
-    help="Sets the BASE_LOT_SIZE for the TradeLocker executor. Only applies to signals without a forced quantity."
+    key=f"base_lot_{selected_broker_name}",
+    help="Sets the BASE_LOT_SIZE for the executor. If 0.0, the bot will use the quantity sent by the TradingView alert."
 )
 
 # Load existing specific lot sizes and toggles
@@ -454,7 +455,7 @@ for sym in specific_lots.keys():
             max_value=50.00,
             value=specific_lots[sym],
             step=0.01,
-            key=f"lot_{sym}",
+            key=f"lot_{selected_broker_name}_{sym}",
             help=f"Lot size for {sym}. Set to 0.0 to fallback to Base Lot Size."
         )
         new_specific_lots[sym] = new_val
@@ -466,7 +467,7 @@ for sym in specific_lots.keys():
             "Allowed Sessions",
             options=["Asian", "London", "New York"],
             default=current_sessions,
-            key=f"session_{sym}"
+            key=f"session_{selected_broker_name}_{sym}"
         )
         new_specific_sessions[sym] = new_sessions
         if set(new_sessions) != set(current_sessions):
@@ -478,6 +479,7 @@ st.sidebar.subheader("Advanced Settings")
 new_visual_arbiter = st.sidebar.toggle(
     "Enable Visual Arbiter (Screenshot Validation)",
     value=visual_arbiter_enabled,
+    key=f"visual_arbiter_{selected_broker_name}",
     help="When enabled, the bot will take a screenshot of TradingView and use vision models to validate the setup before trading."
 )
 
