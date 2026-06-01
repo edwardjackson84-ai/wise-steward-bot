@@ -1743,10 +1743,15 @@ def equity_poller_daemon():
             
         time.sleep(5)
 
-# Start Daemon
-threading.Thread(target=equity_poller_daemon, daemon=True).start()
+_daemon_started = False
+_daemon_lock = threading.Lock()
 
-
+def start_daemon():
+    global _daemon_started
+    with _daemon_lock:
+        if not _daemon_started:
+            threading.Thread(target=equity_poller_daemon, daemon=True).start()
+            _daemon_started = True
 def check_startup_health():
     import sys
     import os
