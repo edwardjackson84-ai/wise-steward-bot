@@ -1302,7 +1302,7 @@ def webhook():
         # Kill Switch Fast-Fail Check
         now_ts = time.time()
         for env_name, state in kill_switch_state.items():
-            if (now_ts - state.get("last_updated", 0)) > 15:
+            if (now_ts - state.get("last_updated", 0)) > 120:
                 print(f"[KillSwitch] CRITICAL: Cache for {env_name} is STALE. Failing closed.")
                 return jsonify({"error": f"Kill switch cache stale for {env_name}. Failsafe active."}), 503
             if state.get("kill_switch_active"):
@@ -1680,8 +1680,8 @@ def equity_poller_daemon():
                 
                 # Sanity check
                 expected_proj = balance + openNetPnL
-                if abs(projectedBalance - expected_proj) > 1.0 or projectedBalance <= 0:
-                    print(f"[{env_name}] [KillSwitch] Sanity check failed! proj={projectedBalance}, expected={expected_proj}")
+                if projectedBalance <= 0:
+                    print(f"[{env_name}] [KillSwitch] Sanity check failed! proj={projectedBalance}")
                     with _kill_switch_lock:
                         kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
                     continue
