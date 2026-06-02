@@ -1646,109 +1646,124 @@ def equity_poller_daemon():
             configs = get_tradelocker_configs_only(get_active_configs())
             # For this MVP, we focus on configs that have ATLAS in the name or we apply to all active TradeLocker accounts
             for config in configs:
-                env_name = config["name"]
-                
-                if "atlas" not in env_name.lower():
-                    continue # Target Atlas for now
-                
-                # Check Token age
-                now_ts = time.time()
-                if env_name not in tokens or (now_ts - last_refresh.get(env_name, 0)) > 3000: # Refresh every 50 mins
+                try:
+                    env_name = config["name"]
+                    
+                    if "atlas" not in env_name.lower():
+                        continue # Target Atlas for now
+                    
+                    # Check Token age
+                    now_ts = time.time()
+                    if env_name not in tokens or (now_ts - last_refresh.get(env_name, 0)) > 3000: # Refresh every 50 mins
+                        try:
+                            token, acc_id, acc_num = authenticate_tradelocker(config)
+                            tokens[env_name] = (token, acc_id, acc_num, config["api_url"])
+                            last_refresh[env_name] = now_ts
+                        except Exception as e:
+                            print(f"[{env_name}] [KillSwitch] Auth failed: {e}")
+                            with _kill_switch_lock:
+                                kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                            continue
+                    
+                    token, acc_id, acc_num, api_url = tokens[env_name]
+                    
+                    headers = {"Authorization": f"Bearer {token}", "accNum": str(acc_num)}
+                    state_url = f"{api_url}/trade/accounts/{acc_id}/state"
                     try:
-                        token, acc_id, acc_num = authenticate_tradelocker(config)
-                        tokens[env_name] = (token, acc_id, acc_num, config["api_url"])
-                        last_refresh[env_name] = now_ts
+                        resp = requests.get(state_url, headers=headers, timeout=5)
+                        
+                        if resp.status_code == 401:
+                            # Token expired, force refresh next loop
+                            last_refresh[env_name] = 0
+                            continue
+                        elif not resp.ok:
+                            print(f"[{env_name}] [KillSwitch] API Error {resp.status_code}: {resp.text}")
+                            with _kill_switch_lock:
+                                kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                            continue
                     except Exception as e:
-                        print(f"[{env_name}] [KillSwitch] Auth failed: {e}")
+                        print(f"[{env_name}] [KillSwitch] Network Error during state fetch: {e}")
+                        continue
+                    
+                    try:
+                        data = resp.json().get("d", {}).get("accountDetailsData", [])
+                    except Exception as e:
+                        print(f"[{env_name}] [KillSwitch] JSON parse error: {e}")
+                        continue
+                        
+                    if len(data) < 24:
+                        print(f"[{env_name}] [KillSwitch] Unexpected array length: {len(data)}")
                         with _kill_switch_lock:
                             kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
                         continue
-                
-                token, acc_id, acc_num, api_url = tokens[env_name]
-                
-                headers = {"Authorization": f"Bearer {token}", "accNum": str(acc_num)}
-                state_url = f"{api_url}/trade/accounts/{acc_id}/state"
-                resp = requests.get(state_url, headers=headers, timeout=5)
-                
-                if resp.status_code == 401:
-                    # Token expired, force refresh next loop
-                    last_refresh[env_name] = 0
-                    continue
-                elif not resp.ok:
-                    print(f"[{env_name}] [KillSwitch] API Error {resp.status_code}: {resp.text}")
-                    with _kill_switch_lock:
-                        kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
-                    continue
-                
-                data = resp.json().get("d", {}).get("accountDetailsData", [])
-                if len(data) < 24:
-                    print(f"[{env_name}] [KillSwitch] Unexpected array length: {len(data)}")
-                    with _kill_switch_lock:
-                        kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
-                    continue
+                        
+                    balance = float(data[0])
+                    projectedBalance = float(data[1])
+                    todayNet = float(data[18])
+                    openNetPnL = float(data[23])
                     
-                balance = float(data[0])
-                projectedBalance = float(data[1])
-                todayNet = float(data[18])
-                openNetPnL = float(data[23])
-                
-                # Sanity check
-                expected_proj = balance + openNetPnL
-                if projectedBalance <= 0:
-                    print(f"[{env_name}] [KillSwitch] Sanity check failed! proj={projectedBalance}")
-                    with _kill_switch_lock:
-                        kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
-                    continue
-                
-                # Baseline logic
-                midnight_ts = _get_midnight_utc_ts()
-                stored_ts = get_start_of_day_ts(env_name)
-                
-                if stored_ts < midnight_ts:
-                    # Reset Time! Capture baseline
-                    baseline = max(balance, projectedBalance)
-                    set_start_of_day_baseline(env_name, baseline, now_ts)
-                    set_kill_switch_flag(env_name, False)
-                    print(f"[{env_name}] [KillSwitch] NEW DAY BASELINE CAPTURED: {baseline}")
-                else:
-                    baseline = get_start_of_day_baseline(env_name)
-                    if baseline is None:
-                        # Cold start mid-day
-                        baseline = balance - todayNet
+                    # Sanity check
+                    expected_proj = balance + openNetPnL
+                    if projectedBalance <= 0:
+                        print(f"[{env_name}] [KillSwitch] Sanity check failed! proj={projectedBalance}")
+                        with _kill_switch_lock:
+                            kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                        continue
+                    
+                    # Baseline logic
+                    midnight_ts = _get_midnight_utc_ts()
+                    stored_ts = get_start_of_day_ts(env_name)
+                    
+                    if stored_ts < midnight_ts:
+                        # Reset Time! Capture baseline
+                        baseline = max(balance, projectedBalance)
                         set_start_of_day_baseline(env_name, baseline, now_ts)
-                        print(f"[{env_name}] [KillSwitch] COLD START BASELINE RECONSTRUCTED: {baseline}")
-                
-                # Breach calculation
-                personal_floor = baseline * (1 - personal_pct)
-                firm_floor = baseline * (1 - firm_pct)
-                native_pnl = todayNet + openNetPnL
-                
-                breached = False
-                reason = ""
-                
-                if projectedBalance <= personal_floor:
-                    breached = True
-                    reason = f"Absolute Equity ({projectedBalance}) hit Personal Floor ({personal_floor})"
-                elif native_pnl <= -(baseline * personal_pct):
-                    breached = True
-                    reason = f"Native P&L ({native_pnl}) exceeded limit ({-baseline * personal_pct})"
-                
-                # Update memory cache
-                is_active = get_kill_switch_flag(env_name)
-                
-                with _kill_switch_lock:
-                    kill_switch_state[env_name] = {
-                        "kill_switch_active": is_active or breached,
-                        "last_updated": now_ts,
-                        "fail_closed": False,
-                        "equity": projectedBalance
-                    }
-                
-                if breached and not is_active:
-                    print(f"[{env_name}] [KillSwitch] TRIPPED! {reason}")
-                    set_kill_switch_flag(env_name, True)
-                    # Flatten
-                    flatten_account(config, token, acc_id, acc_num, api_url, env_name)
+                        set_kill_switch_flag(env_name, False)
+                        print(f"[{env_name}] [KillSwitch] NEW DAY BASELINE CAPTURED: {baseline}")
+                    else:
+                        baseline = get_start_of_day_baseline(env_name)
+                        if baseline is None:
+                            # Cold start mid-day
+                            baseline = balance - todayNet
+                            set_start_of_day_baseline(env_name, baseline, now_ts)
+                            print(f"[{env_name}] [KillSwitch] COLD START BASELINE RECONSTRUCTED: {baseline}")
+                    
+                    # Breach calculation
+                    personal_floor = baseline * (1 - personal_pct)
+                    firm_floor = baseline * (1 - firm_pct)
+                    native_pnl = todayNet + openNetPnL
+                    
+                    breached = False
+                    reason = ""
+                    
+                    if projectedBalance <= personal_floor:
+                        breached = True
+                        reason = f"Absolute Equity ({projectedBalance}) hit Personal Floor ({personal_floor})"
+                    elif native_pnl <= -(baseline * personal_pct):
+                        breached = True
+                        reason = f"Native P&L ({native_pnl}) exceeded limit ({-baseline * personal_pct})"
+                    
+                    # Update memory cache
+                    is_active = get_kill_switch_flag(env_name)
+                    
+                    with _kill_switch_lock:
+                        kill_switch_state[env_name] = {
+                            "kill_switch_active": is_active or breached,
+                            "last_updated": now_ts,
+                            "fail_closed": False,
+                            "equity": projectedBalance
+                        }
+                    
+                    if breached and not is_active:
+                        print(f"[{env_name}] [KillSwitch] TRIPPED! {reason}")
+                        set_kill_switch_flag(env_name, True)
+                        # Flatten
+                        flatten_account(config, token, acc_id, acc_num, api_url, env_name)
+                except Exception as e:
+                    print(f"[KillSwitch] Unexpected error for config {config.get('name', 'unknown')}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
                 
         except Exception as e:
             print(f"[KillSwitch] Unexpected loop error: {e}")
