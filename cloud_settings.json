@@ -2,7 +2,7 @@
     "/Users/edwardjackson/.gemini/antigravity/scratch/wise-steward-bot/.env.atlasdemo": {
         "BASE_LOT_SIZE": "0.09000000000000001",
         "ENABLE_VISUAL_ARBITER": "false",
-        "LOT_SIZE_US30": "0.009999999999999997",
+        "LOT_SIZE_US30": "0.0",
         "LOT_SIZE_NAS100": "0.0",
         "LOT_SIZE_SPX": "0.0",
         "LOT_SIZE_EURUSD": "0.0",
