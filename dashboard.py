@@ -513,6 +513,7 @@ if new_lot_size != current_lot_size or lots_changed or sessions_changed or new_v
             f.write(f"{k}={v}\n")
             
     # --- CLOUD SYNC FEATURE ---
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     cloud_settings_file = os.path.join(script_dir, "cloud_settings.json")
     cloud_settings = {}
     if os.path.exists(cloud_settings_file):
