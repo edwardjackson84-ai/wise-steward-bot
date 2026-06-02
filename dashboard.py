@@ -523,11 +523,16 @@ if new_lot_size != current_lot_size or lots_changed or sessions_changed or new_v
                 cloud_settings = json.load(f)
         except: pass
         
-    if env_file not in cloud_settings:
-        cloud_settings[env_file] = {}
+    env_basename = os.path.basename(env_file)
+    if env_basename not in cloud_settings:
+        cloud_settings[env_basename] = {}
         
     for k, v in env_vars.items():
-        cloud_settings[env_file][k] = v
+        cloud_settings[env_basename][k] = v
+        
+    # Also clean up any old absolute path keys if they exist
+    if env_file in cloud_settings and env_file != env_basename:
+        del cloud_settings[env_file]
         
     with open(cloud_settings_file, "w") as f:
         import json
