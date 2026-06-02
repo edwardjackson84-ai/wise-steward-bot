@@ -512,8 +512,43 @@ if new_lot_size != current_lot_size or lots_changed or sessions_changed or new_v
         for k, v in env_vars.items():
             f.write(f"{k}={v}\n")
             
-    st.sidebar.success("Risk settings updated!")
-
+    # --- CLOUD SYNC FEATURE ---
+    cloud_settings_file = os.path.join(script_dir, "cloud_settings.json")
+    cloud_settings = {}
+    if os.path.exists(cloud_settings_file):
+        try:
+            import json
+            with open(cloud_settings_file, "r") as f:
+                cloud_settings = json.load(f)
+        except: pass
+        
+    if env_file not in cloud_settings:
+        cloud_settings[env_file] = {}
+        
+    for k, v in env_vars.items():
+        cloud_settings[env_file][k] = v
+        
+    with open(cloud_settings_file, "w") as f:
+        import json
+        json.dump(cloud_settings, f, indent=4)
+        
+    st.sidebar.success("Risk settings updated locally!")
+    
+    # Auto-commit and push safely
+    import subprocess
+    try:
+        subprocess.run(["git", "add", "cloud_settings.json"], cwd=script_dir, check=True)
+        subprocess.run(["git", "commit", "-m", f"Sync dashboard settings for {env_file}"], cwd=script_dir, check=True)
+        subprocess.run(["git", "push"], cwd=script_dir, check=True)
+        st.sidebar.success("Cloud Sync Complete: Live bot is updating!")
+    except subprocess.CalledProcessError as e:
+        # If there's nothing to commit, it raises an error, which is fine
+        if "nothing to commit" in str(e) or e.returncode == 1:
+            pass
+        else:
+            st.sidebar.error(f"Cloud Sync Failed: {e}")
+    except Exception as e:
+        st.sidebar.error(f"Cloud Sync Error: {e}")
 # Propagate to os.environ for immediately running scripts (if applicable)
 os.environ["BASE_LOT_SIZE"] = str(new_lot_size)
 for k, v in new_specific_lots.items():

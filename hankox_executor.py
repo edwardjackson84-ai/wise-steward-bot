@@ -352,6 +352,20 @@ def get_active_configs():
         if ep is None:
             continue
         vals = dotenv_values(ep)
+        
+        # --- CLOUD SYNC FEATURE ---
+        cloud_settings_path = os.path.join(script_dir, "cloud_settings.json")
+        if os.path.exists(cloud_settings_path):
+            try:
+                import json
+                with open(cloud_settings_path, "r") as f:
+                    cs = json.load(f)
+                    if env_name in cs:
+                        for k, v in cs[env_name].items():
+                            vals[k] = v
+            except Exception as e:
+                print(f"Error reading cloud_settings.json: {e}")
+                
         is_active = str(vals.get("ACCOUNT_ACTIVE", "false")).strip().lower() == "true"
         if env_name in toggles:
             is_active = bool(toggles[env_name])
