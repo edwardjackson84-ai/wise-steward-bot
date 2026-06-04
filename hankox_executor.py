@@ -947,6 +947,13 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
 
         if trade_id:
             registry_add_pending(trade_id, symbol, side, config_qty, signal, config["name"])
+            
+        if config_qty <= 0:
+            print(f"[{config['name']}] Skipping trade: resolved lot size is {config_qty}")
+            if trade_id:
+                registry_mark_filled(trade_id, config["name"], broker_id="skipped")
+            continue
+            
         try:
             if config["type"] == "hankotrade":
                 token, acc_id = authenticate_hankotrade(config)
@@ -1447,9 +1454,6 @@ def webhook():
             # qty parsed here is the baseline payload quantity. It will be overridden
             # per-broker dynamically in place_multi_orders_async based on each active config.
             qty = float(data.get("contracts", data.get("qty", 0.01)))
-            if qty <= 0:
-                print(f"Rejecting: resolved lot size is 0")
-                return jsonify({"status": "ignored", "reason": "Zero Lot Size"}), 200
 
             raw_side   = data.get("side", "").lower()
             raw_action = action
