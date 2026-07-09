@@ -15,6 +15,7 @@ EMAIL = os.environ.get("TRADELOCKER_EMAIL", "edward.jackson84@gmail.com")
 PASSWORD = os.environ.get("TRADELOCKER_PASSWORD", "v&LA2LWmN5kG")
 SERVER = os.environ.get("TRADELOCKER_SERVER", "ATLAS")
 TARGET_ACCOUNT_IDS = os.environ.get("TRADELOCKER_ACCOUNT_IDS", "D#2323145,D#2324199")
+LOT_MULTIPLIERS = os.environ.get("TRADELOCKER_LOT_MULTIPLIERS", "1.0,1.0")
 
 INSTRUMENT_MAP = {
     "US30": 17028, # Mapped from Hankotrade Demo API
@@ -145,7 +146,7 @@ def close_position(token, account_id, acc_num, signal_data, target_close_side):
     if positions_closed == 0:
         print(f"No open {target_close_side} positions found for {symbol} to close.")
 
-def place_order(token, account_id, acc_num, signal_data):
+def place_order(token, account_id, acc_num, signal_data, multiplier=1.0):
     """Place a market entry order on TradeLocker based on the webhook signal."""
     symbol = signal_data.get("symbol")
     
@@ -160,7 +161,7 @@ def place_order(token, account_id, acc_num, signal_data):
         print(f"Error: {symbol} is not mapped to an Instrument ID. Cannot place order.")
         return
         
-    print(f"Placing {tl_side} order for {symbol} (Instrument ID: {instrument_id})...")
+    print(f"Placing {tl_side} order for {symbol} (Instrument ID: {instrument_id}) with multiplier {multiplier}...")
     
     # Fetch dynamic routeId (Required for Hankotrade indices/crypto)
     instruments_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/instruments"
@@ -184,7 +185,12 @@ def place_order(token, account_id, acc_num, signal_data):
     order_url = f"{TRADELOCKER_API_URL}/trade/accounts/{account_id}/orders"
     
     # Parse generic defaults or Oliver Velez specific fields
-    quantity = signal_data.get("contracts", signal_data.get("qty", 1.0))
+    base_qty = signal_data.get("contracts", signal_data.get("qty", 1.0))
+    try:
+        final_qty = float(base_qty) * multiplier
+    except ValueError:
+        final_qty = float(multiplier)
+        
     sl = signal_data.get("sl", signal_data.get("initial_stop"))
     tp = signal_data.get("tp")
     
@@ -201,7 +207,7 @@ def place_order(token, account_id, acc_num, signal_data):
         
     payload = {
         "tradableInstrumentId": instrument_id,
-        "qty": float(quantity),
+        "qty": final_qty,
         "side": tl_side,
         "type": "market",
         "validity": "IOC",  # Required immediate-or-cancel for market
@@ -239,11 +245,26 @@ def handle_webhook():
         # Action logic decoding
         action = data.get("action", "").lower()
         
+        multipliers_str = [m.strip() for m in LOT_MULTIPLIERS.split(",")]
+        target_id_list = [t.strip() for t in TARGET_ACCOUNT_IDS.split(",") if t.strip()]
+        multiplier_map = {}
+        for i, acc_id in enumerate(target_id_list):
+            try:
+                multiplier_map[acc_id] = float(multipliers_str[i]) if i < len(multipliers_str) else 1.0
+            except ValueError:
+                multiplier_map[acc_id] = 1.0
+                
         for acc in target_accounts:
             account_id = acc.get("id")
             acc_num = acc.get("accNum", "1")
             
-            print(f"\n--- Processing for Account: {acc_num} ---")
+            mult = 1.0
+            if str(account_id) in multiplier_map:
+                mult = multiplier_map[str(account_id)]
+            elif str(acc_num) in multiplier_map:
+                mult = multiplier_map[str(acc_num)]
+            
+            print(f"\n--- Processing for Account: {acc_num} (Lot Multiplier: {mult}x) ---")
             
             # Check if this is an exit order (e.g., "close_long", "close_short")
             if action in ["close_long", "close_short"]:
@@ -252,7 +273,7 @@ def handle_webhook():
                 
             # Check if it's an entry order (e.g., "buy", "sell", "entry")
             else:
-                place_order(token, account_id, acc_num, data)
+                place_order(token, account_id, acc_num, data, mult)
                 
         return jsonify({"status": "success", "message": f"Trade processed for {len(target_accounts)} account(s)"}), 200
         
