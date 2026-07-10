@@ -437,8 +437,15 @@ def authenticate_tradelocker(config):
         acc_resp = requests.get(acc_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
         if acc_resp.ok:
             accounts = acc_resp.json().get("accounts", [])
+            target_acc_num = str(config.get("acc_num", "")).strip()
             if accounts:
-                acc_id = accounts[0].get("id")
+                if target_acc_num and target_acc_num != "None":
+                    for acc in accounts:
+                        if str(acc.get("accNum", "")).strip() == target_acc_num:
+                            acc_id = acc.get("id")
+                            break
+                if not acc_id:
+                    acc_id = accounts[0].get("id")
     return token, acc_id, config.get("acc_num", "1")
 
 def authenticate_hankotrade(config):
