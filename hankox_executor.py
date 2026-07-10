@@ -334,7 +334,7 @@ def get_active_configs():
         except Exception:
             pass
 
-    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.e8demo", ".env.e8live", ".env.e8markets", ".env.e8tradelocker"]
+    env_files = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo", ".env.cruciallive", ".env.atlasdemo", ".env.atlasdemo2", ".env.atlasdemo3", ".env.e8demo", ".env.e8live", ".env.e8markets", ".env.e8markets2", ".env.e8tradelocker"]
 
     config_dirs = [
         os.environ.get("WISE_STEWARD_CONFIG_DIR"),
@@ -1158,8 +1158,8 @@ def toggle_account():
     env_name = data.get("env_name")
     is_active = data.get("active")
     valid_envs = [".env.hankodemo", ".env.hankolive", ".env.crucialdemo",
-                  ".env.cruciallive", ".env.atlasdemo", ".env.forexcom",
-                  ".env.e8demo", ".env.e8live", ".env.e8markets", ".env.e8tradelocker"]
+                  ".env.cruciallive", ".env.atlasdemo", ".env.atlasdemo2", ".env.atlasdemo3", ".env.forexcom",
+                  ".env.e8demo", ".env.e8live", ".env.e8markets", ".env.e8markets2", ".env.e8tradelocker"]
     if env_name and env_name in valid_envs:
         toggle_path = os.path.join(script_dir, "toggles.json")
         toggles = {}
