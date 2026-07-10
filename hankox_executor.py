@@ -404,7 +404,7 @@ def get_active_configs():
                 "password": vals.get("TRADELOCKER_PASSWORD"),
                 "server": vals.get("TRADELOCKER_SERVER"),
                 "account_id": vals.get("TRADELOCKER_ACCOUNT_ID"),
-                "acc_num": vals.get("TRADELOCKER_ACCNUM", "1" if "e8" in env_name.lower() else vals.get("TRADELOCKER_ACCOUNT_ID")),
+                "acc_num": str(vals.get("TRADELOCKER_ACCNUM", "1" if "e8" in env_name.lower() else vals.get("TRADELOCKER_ACCOUNT_ID"))).replace("D#", "").strip(),
                 "symbol_suffix": "",
                 "env_vars": vals
             })
@@ -441,7 +441,7 @@ def authenticate_tradelocker(config):
             if accounts:
                 if target_acc_num and target_acc_num != "None":
                     for acc in accounts:
-                        if str(acc.get("accNum", "")).strip() == target_acc_num:
+                        if str(acc.get("accNum", "")).replace("D#", "").strip() == target_acc_num:
                             acc_id = acc.get("id")
                             break
                 if not acc_id:
