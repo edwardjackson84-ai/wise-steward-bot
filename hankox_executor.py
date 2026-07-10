@@ -432,8 +432,10 @@ def authenticate_tradelocker(config):
         raise Exception(f"TradeLocker Auth failed: {resp.text}")
     token = resp.json().get("accessToken")
     acc_id = config.get("account_id")
-    if acc_id and len(str(acc_id)) < 12:
-        acc_id = None
+    if acc_id:
+        acc_str = str(acc_id)
+        if len(acc_str) < 12 or "," in acc_str or "#" in acc_str:
+            acc_id = None
         
     if not acc_id:
         acc_url = f"{config['api_url']}/trade/accounts"
