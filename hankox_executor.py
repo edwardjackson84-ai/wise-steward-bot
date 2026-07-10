@@ -440,16 +440,23 @@ def authenticate_tradelocker(config):
         acc_resp = requests.get(acc_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
         if acc_resp.ok:
             accounts = acc_resp.json().get("accounts", [])
-            print(f"[{config.get('name')}] DEBUG TRADELOCKER ACCOUNTS API RESPONSE: {accounts}")
+            print(f"[{config.get('name')}] DEBUG TRADELOCKER ACCOUNTS API RESPONSE: {accounts}", flush=True)
             target_acc_num = str(config.get("acc_num", "")).strip()
+            print(f"[{config.get('name')}] TARGET ACC NUM IS: '{target_acc_num}'", flush=True)
             if accounts:
                 if target_acc_num and target_acc_num != "None":
                     for acc in accounts:
-                        if str(acc.get("accNum", "")).replace("D#", "").strip() == target_acc_num:
+                        cleaned_api_acc = str(acc.get("accNum", "")).replace("D#", "").strip()
+                        print(f"[{config.get('name')}] Comparing API '{cleaned_api_acc}' with TARGET '{target_acc_num}'", flush=True)
+                        if cleaned_api_acc == target_acc_num:
                             acc_id = acc.get("id")
+                            print(f"[{config.get('name')}] MATCHED ACCOUNT ID: {acc_id}", flush=True)
                             break
                 if not acc_id:
                     acc_id = accounts[0].get("id")
+                    print(f"[{config.get('name')}] FALLBACK ACCOUNT ID: {acc_id}", flush=True)
+        else:
+            print(f"[{config.get('name')}] ACCOUNTS FETCH FAILED: {acc_resp.status_code} {acc_resp.text}", flush=True)
     return token, acc_id, config.get("acc_num", "1")
 
 def authenticate_hankotrade(config):
