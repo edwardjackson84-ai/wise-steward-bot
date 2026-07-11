@@ -434,21 +434,23 @@ def authenticate_tradelocker(config):
     acc_id = None
     
     if not acc_id:
+        import re
         acc_url = f"{config['api_url']}/trade/accounts"
+        clean_header_acc = re.sub(r'\D', '', config.get("acc_num", ""))
         acc_resp = requests.get(acc_url, headers={
             "Authorization": f"Bearer {token}",
-            "accNum": config.get("acc_num", "").strip()
+            "accNum": clean_header_acc
         }, timeout=10)
         if acc_resp.ok:
             accounts = acc_resp.json().get("accounts", [])
             print(f"[{config.get('name')}] DEBUG TRADELOCKER ACCOUNTS API RESPONSE: {accounts}", flush=True)
             target_acc_num = config.get("acc_num", "").strip()
-            clean_target = target_acc_num.replace("D#", "").strip()
+            clean_target = re.sub(r'\D', '', target_acc_num)
             print(f"[{config.get('name')}] TARGET ACC NUM IS: '{target_acc_num}' (clean: '{clean_target}')", flush=True)
             if accounts:
                 if clean_target and clean_target != "None":
                     for acc in accounts:
-                        cleaned_api_acc = str(acc.get("accNum", "")).replace("D#", "").strip()
+                        cleaned_api_acc = re.sub(r'\D', '', str(acc.get("accNum", "")))
                         print(f"[{config.get('name')}] Comparing API '{cleaned_api_acc}' with TARGET '{clean_target}'", flush=True)
                         if cleaned_api_acc == clean_target:
                             acc_id = acc.get("id")
