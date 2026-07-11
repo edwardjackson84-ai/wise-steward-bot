@@ -404,7 +404,7 @@ def get_active_configs():
                 "password": vals.get("TRADELOCKER_PASSWORD"),
                 "server": vals.get("TRADELOCKER_SERVER"),
                 "account_id": vals.get("TRADELOCKER_ACCOUNT_ID"),
-                "acc_num": str(vals.get("TRADELOCKER_ACCNUM", "1" if "e8" in env_name.lower() else vals.get("TRADELOCKER_ACCOUNT_ID"))).replace("D#", "").strip(),
+                "acc_num": str(vals.get("TRADELOCKER_ACCNUM", "1" if "e8" in env_name.lower() else vals.get("TRADELOCKER_ACCOUNT_ID"))).strip(),
                 "symbol_suffix": "",
                 "env_vars": vals
             })
@@ -437,19 +437,20 @@ def authenticate_tradelocker(config):
         acc_url = f"{config['api_url']}/trade/accounts"
         acc_resp = requests.get(acc_url, headers={
             "Authorization": f"Bearer {token}",
-            "accNum": str(config.get("acc_num", "")).strip()
+            "accNum": config.get("acc_num", "").strip()
         }, timeout=10)
         if acc_resp.ok:
             accounts = acc_resp.json().get("accounts", [])
             print(f"[{config.get('name')}] DEBUG TRADELOCKER ACCOUNTS API RESPONSE: {accounts}", flush=True)
-            target_acc_num = str(config.get("acc_num", "")).replace("D#", "").strip()
-            print(f"[{config.get('name')}] TARGET ACC NUM IS: '{target_acc_num}'", flush=True)
+            target_acc_num = config.get("acc_num", "").strip()
+            clean_target = target_acc_num.replace("D#", "").strip()
+            print(f"[{config.get('name')}] TARGET ACC NUM IS: '{target_acc_num}' (clean: '{clean_target}')", flush=True)
             if accounts:
-                if target_acc_num and target_acc_num != "None":
+                if clean_target and clean_target != "None":
                     for acc in accounts:
                         cleaned_api_acc = str(acc.get("accNum", "")).replace("D#", "").strip()
-                        print(f"[{config.get('name')}] Comparing API '{cleaned_api_acc}' with TARGET '{target_acc_num}'", flush=True)
-                        if cleaned_api_acc == target_acc_num:
+                        print(f"[{config.get('name')}] Comparing API '{cleaned_api_acc}' with TARGET '{clean_target}'", flush=True)
+                        if cleaned_api_acc == clean_target:
                             acc_id = acc.get("id")
                             print(f"[{config.get('name')}] MATCHED ACCOUNT ID: {acc_id}", flush=True)
                             break
