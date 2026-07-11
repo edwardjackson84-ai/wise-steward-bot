@@ -434,6 +434,9 @@ def authenticate_tradelocker(config):
     acc_id = None
     
     if not acc_id:
+        print(f"[{config['name']}] FETCHING ALL ACCOUNTS TO DISCOVER INDEX...", flush=True)
+        r2 = requests.get(f"{config['api_url']}/auth/jwt/all-accounts", headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        print(f"[{config['name']}] ALL ACCOUNTS RESPONSE: {r2.text}", flush=True)
         import re
         acc_url = f"{config['api_url']}/trade/accounts"
         clean_header_acc = re.sub(r'\D', '', config.get("acc_num", ""))
