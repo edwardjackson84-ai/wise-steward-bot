@@ -434,37 +434,40 @@ def authenticate_tradelocker(config):
     acc_id = None
     
     if not acc_id:
+        import re
         print(f"[{config['name']}] FETCHING ALL ACCOUNTS TO DISCOVER INDEX...", flush=True)
         r2 = requests.get(f"{config['api_url']}/auth/jwt/all-accounts", headers={"Authorization": f"Bearer {token}"}, timeout=10)
-        print(f"[{config['name']}] ALL ACCOUNTS RESPONSE: {r2.text}", flush=True)
-        import re
-        acc_url = f"{config['api_url']}/trade/accounts"
-        clean_header_acc = re.sub(r'\D', '', config.get("acc_num", ""))
-        acc_resp = requests.get(acc_url, headers={
-            "Authorization": f"Bearer {token}",
-            "accNum": clean_header_acc
-        }, timeout=10)
-        if acc_resp.ok:
-            accounts = acc_resp.json().get("accounts", [])
-            print(f"[{config.get('name')}] DEBUG TRADELOCKER ACCOUNTS API RESPONSE: {accounts}", flush=True)
-            target_acc_num = config.get("acc_num", "").strip()
-            clean_target = re.sub(r'\D', '', target_acc_num)
-            print(f"[{config.get('name')}] TARGET ACC NUM IS: '{target_acc_num}' (clean: '{clean_target}')", flush=True)
-            if accounts:
-                if clean_target and clean_target != "None":
-                    for acc in accounts:
-                        cleaned_api_acc = re.sub(r'\D', '', str(acc.get("accNum", "")))
-                        print(f"[{config.get('name')}] Comparing API '{cleaned_api_acc}' with TARGET '{clean_target}'", flush=True)
-                        if cleaned_api_acc == clean_target:
-                            acc_id = acc.get("id")
-                            print(f"[{config.get('name')}] MATCHED ACCOUNT ID: {acc_id}", flush=True)
-                            break
-                if not acc_id:
-                    acc_id = accounts[0].get("id")
-                    print(f"[{config.get('name')}] FALLBACK ACCOUNT ID: {acc_id}", flush=True)
-        else:
-            print(f"[{config.get('name')}] ACCOUNTS FETCH FAILED: {acc_resp.status_code} {acc_resp.text}", flush=True)
-    return token, acc_id, config.get("acc_num", "1")
+        
+        if not r2.ok:
+            raise Exception(f"Failed to fetch all-accounts for {config['name']}: {r2.text}")
+            
+        all_accounts_data = r2.json()
+        accounts_list = all_accounts_data.get("accounts", []) if isinstance(all_accounts_data, dict) else all_accounts_data
+        
+        raw_acct_id = str(config.get("account_id", "") or config.get("acc_num", ""))
+        target_account_id = re.sub(r'\D', '', raw_acct_id)
+        
+        matched_acc_num = None
+        matched_acc_id = None
+        
+        print(f"[{config['name']}] TARGET INTEGER ACCOUNT ID: '{target_account_id}'", flush=True)
+        
+        for acc in accounts_list:
+            acc_id_str = re.sub(r'\D', '', str(acc.get("id", "")))
+            print(f"[{config['name']}] Comparing API accountId '{acc_id_str}' with TARGET '{target_account_id}'", flush=True)
+            if acc_id_str == target_account_id:
+                matched_acc_num = acc.get("accNum")
+                matched_acc_id = acc.get("id")
+                break
+                
+        if matched_acc_num is None:
+            msg = f"CRITICAL: Account ID {target_account_id} not found in all-accounts for {config['name']}! Halting."
+            print(msg, flush=True)
+            raise Exception(msg)
+            
+        print(f"[{config['name']}] Found match! accNum index: {matched_acc_num}, accountId: {matched_acc_id}", flush=True)
+        
+        return token, matched_acc_id, matched_acc_num
 
 def authenticate_hankotrade(config):
     login_data = {
