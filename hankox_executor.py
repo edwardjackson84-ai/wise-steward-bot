@@ -442,7 +442,7 @@ def authenticate_tradelocker(config):
         if acc_resp.ok:
             accounts = acc_resp.json().get("accounts", [])
             print(f"[{config.get('name')}] DEBUG TRADELOCKER ACCOUNTS API RESPONSE: {accounts}", flush=True)
-            target_acc_num = str(config.get("acc_num", "")).strip()
+            target_acc_num = str(config.get("acc_num", "")).replace("D#", "").strip()
             print(f"[{config.get('name')}] TARGET ACC NUM IS: '{target_acc_num}'", flush=True)
             if accounts:
                 if target_acc_num and target_acc_num != "None":
