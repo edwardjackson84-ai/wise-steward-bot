@@ -1133,8 +1133,187 @@ def close_by_symbol_side_fifo(active_configs, symbol, action):
     return close_specific_trade(active_configs, trade_id)
 
 # ======================================================================
-# UTILITY
+# UTILITY & RED FOLDER NEWS LOCKOUT
 # ======================================================================
+
+_news_cache = {
+    "events": [],
+    "last_fetched": 0.0,
+}
+_news_cache_lock = threading.Lock()
+_last_news_alert_ts = 0.0
+
+FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+
+
+def _get_relevant_currencies(symbol: str):
+    sym = SYMBOL_MAP.get(symbol.upper(), symbol.upper())
+    currencies = {"USD"}  # Default USD for US30, NAS100, SPX, XAUUSD, BTCUSD, etc.
+    for ccy in ("EUR", "GBP", "JPY", "CAD", "AUD", "NZD", "CHF", "CNY", "HKD"):
+        if ccy in sym:
+            currencies.add(ccy)
+    return currencies
+
+
+def refresh_news_calendar(force: bool = False):
+    """
+    Fetches this week's economic calendar from ForexFactory's JSON feed and caches
+    all High-Impact (Red Folder) events. Refreshes every 4 hours.
+    """
+    now_ts = time.time()
+    with _news_cache_lock:
+        if not force and _news_cache["events"] and (now_ts - _news_cache["last_fetched"]) < 14400:
+            return list(_news_cache["events"])
+
+    try:
+        resp = requests.get(
+            FF_CALENDAR_URL,
+            headers={"User-Agent": "WiseStewardBot/1.0"},
+            timeout=6,
+        )
+        if resp.ok:
+            raw_events = resp.json()
+            high_events = []
+            for ev in raw_events:
+                if str(ev.get("impact", "")).strip().lower() != "high":
+                    continue
+                date_str = ev.get("date")
+                if not date_str:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(date_str)
+                    high_events.append({
+                        "title": ev.get("title", "Red Folder News"),
+                        "country": str(ev.get("country", "USD")).upper().strip(),
+                        "timestamp": dt.timestamp(),
+                        "date_iso": date_str,
+                    })
+                except Exception:
+                    continue
+            with _news_cache_lock:
+                _news_cache["events"] = high_events
+                _news_cache["last_fetched"] = now_ts
+            print(f"[NewsLockout] Cached {len(high_events)} Red Folder (High-Impact) events for this week.")
+            return high_events
+        else:
+            print(f"[NewsLockout] Calendar fetch returned status {resp.status_code}")
+    except Exception as e:
+        print(f"[NewsLockout] Calendar fetch error (using cached events): {e}")
+
+    with _news_cache_lock:
+        return list(_news_cache["events"])
+
+
+def _check_manual_news_windows(now_ts: float, buffer_minutes: float):
+    """
+    Parses optional manual lockout entries from NEWS_LOCKOUT_WINDOWS (in America/New_York time).
+    Supported comma-separated formats:
+      - '2026-10-28 14:00'           (specific date & time, ±buffer_minutes)
+      - '2026-10-28 13:55-14:35'     (specific date & explicit start-end range)
+      - 'WED 14:00' or 'THU 08:30'   (day of week & time, ±buffer_minutes)
+      - 'WED 13:55-14:35'            (day of week & explicit range)
+      - '08:30'                      (daily recurring time, ±buffer_minutes)
+    """
+    raw_windows = os.environ.get("NEWS_LOCKOUT_WINDOWS", "").strip()
+    if not raw_windows:
+        for cfg in get_active_configs():
+            w = cfg.get("env_vars", {}).get("NEWS_LOCKOUT_WINDOWS", "").strip()
+            if w:
+                raw_windows = w
+                break
+    if not raw_windows:
+        return False, None
+
+    try:
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timezone, timedelta
+        ny_tz = timezone(timedelta(hours=-4))
+
+    now_ny = datetime.fromtimestamp(now_ts, tz=ny_tz)
+    weekday_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+    buffer_sec = buffer_minutes * 60.0
+
+    for entry in raw_windows.split(","):
+        token = entry.strip()
+        if not token:
+            continue
+        try:
+            parts = token.split()
+            target_date = now_ny.date()
+            time_part = parts[-1]
+
+            if len(parts) == 2:
+                prefix = parts[0].upper()
+                if prefix in weekday_map:
+                    if now_ny.weekday() != weekday_map[prefix]:
+                        continue
+                else:
+                    target_date = datetime.strptime(parts[0], "%Y-%m-%d").date()
+                    if target_date != now_ny.date():
+                        continue
+
+            if "-" in time_part:
+                start_str, end_str = time_part.split("-", 1)
+                sh, sm = [int(x) for x in start_str.split(":")]
+                eh, em = [int(x) for x in end_str.split(":")]
+                start_dt = datetime(target_date.year, target_date.month, target_date.day, sh, sm, tzinfo=ny_tz)
+                end_dt = datetime(target_date.year, target_date.month, target_date.day, eh, em, tzinfo=ny_tz)
+                if start_dt.timestamp() <= now_ts <= end_dt.timestamp():
+                    return True, f"Manual News Lockout ({token} ET)"
+            else:
+                hh, mm = [int(x) for x in time_part.split(":")]
+                ev_dt = datetime(target_date.year, target_date.month, target_date.day, hh, mm, tzinfo=ny_tz)
+                diff = abs(now_ts - ev_dt.timestamp())
+                if diff <= buffer_sec:
+                    return True, f"Manual News Lockout ({token} ET ±{int(buffer_minutes)}m)"
+        except Exception as e:
+            print(f"[NewsLockout] Could not parse manual window '{token}': {e}")
+
+    return False, None
+
+
+def is_news_lockout_active(symbol: str = "US30", now_ts: float = None):
+    """
+    Returns (is_locked: bool, reason: str or None).
+    Checks both:
+      1. Manual day/time entries in NEWS_LOCKOUT_WINDOWS
+      2. Automatic ForexFactory High-Impact (Red Folder) calendar events
+    Default window: 5 minutes before to 5 minutes after the event.
+    """
+    if os.environ.get("DISABLE_NEWS_LOCKOUT", "false").strip().lower() == "true":
+        return False, None
+
+    if now_ts is None:
+        now_ts = time.time()
+
+    try:
+        buffer_minutes = float(os.environ.get("NEWS_BUFFER_MINUTES", "5"))
+    except Exception:
+        buffer_minutes = 5.0
+    buffer_sec = buffer_minutes * 60.0
+
+    # 1. Check manual day/time lockout windows
+    manual_locked, manual_reason = _check_manual_news_windows(now_ts, buffer_minutes)
+    if manual_locked:
+        return True, manual_reason
+
+    # 2. Check automatic Red Folder calendar events
+    relevant_ccys = _get_relevant_currencies(symbol)
+    events = refresh_news_calendar(force=False)
+    for ev in events:
+        if ev["country"] not in relevant_ccys:
+            continue
+        ev_ts = ev["timestamp"]
+        if (ev_ts - buffer_sec) <= now_ts <= (ev_ts + buffer_sec):
+            mins_Away = (ev_ts - now_ts) / 60.0
+            timing_str = f"in {mins_Away:.1f}m" if mins_Away >= 0 else f"{abs(mins_Away):.1f}m ago"
+            reason = f"Red Folder News Lockout: [{ev['country']}] {ev['title']} ({timing_str}, ±{int(buffer_minutes)}m window)"
+            return True, reason
+
+    return False, None
+
 
 def is_sabbath_mode_active():
     now = datetime.now()
@@ -1233,6 +1412,39 @@ def view_registry():
     if trade_id_filter:
         reg = {k: v for k, v in reg.items() if k == trade_id_filter}
     return jsonify(reg), 200
+
+@app.route("/guardrails", methods=["GET"])
+def view_guardrails():
+    """Returns live status of the Red Folder News Lockout (±5m) and 1% Daily Equity Loss Stop-Trading guardrails."""
+    import hmac
+    expected_token = os.environ.get("WEBHOOK_SECRET")
+    if not expected_token:
+        return jsonify({"error": "Service misconfigured"}), 503
+    if not hmac.compare_digest(expected_token, request.args.get("token", "")):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    symbol = request.args.get("symbol", "US30").upper()
+    news_locked, news_reason = is_news_lockout_active(symbol)
+    now_ts = time.time()
+    events = refresh_news_calendar(force=False)
+    relevant_ccys = _get_relevant_currencies(symbol)
+    upcoming = [
+        ev for ev in events
+        if ev["country"] in relevant_ccys and ev["timestamp"] >= (now_ts - 3600)
+    ]
+    upcoming.sort(key=lambda x: x["timestamp"])
+
+    return jsonify({
+        "symbol": symbol,
+        "news_lockout": {
+            "active": news_locked,
+            "reason": news_reason,
+            "buffer_minutes": float(os.environ.get("NEWS_BUFFER_MINUTES", "5")),
+            "manual_windows": os.environ.get("NEWS_LOCKOUT_WINDOWS", ""),
+            "upcoming_red_folder_events": upcoming[:15],
+        },
+        "daily_loss_kill_switch": kill_switch_state,
+    }), 200
 
 def _validate_absolute_direction(symbol, side, target_type, abs_price, price, source):
     if target_type == 'sl':
@@ -1389,6 +1601,19 @@ def webhook():
         if is_sabbath_mode_active() and not bypass_sabbath:
             print(f"Rejecting {symbol}: Sabbath Mode Active.")
             return jsonify({"status": "rejected", "reason": "Sabbath Mode Active"}), 200
+
+        # -- Red Folder News Lockout (±5 minutes before/after high-impact news) --
+        bypass_news = str(data.get("bypass_news", "false")).lower() == "true"
+        if not bypass_news and action != "signal":
+            news_locked, news_reason = is_news_lockout_active(symbol)
+            if news_locked:
+                print(f"[NewsLockout] Rejecting {symbol} ({action}): {news_reason}")
+                global _last_news_alert_ts
+                now_alert = time.time()
+                if now_alert - _last_news_alert_ts > 300:
+                    notify_telegram(f"📰 {news_reason}\nBlocked {symbol} ({action}) webhook to protect account.")
+                    _last_news_alert_ts = now_alert
+                return jsonify({"status": "rejected", "reason": news_reason}), 200
 
         # -- Session filter (skip for close actions) --
         if action not in ["close_long", "close_short", "close_all"] and symbol != "UNKNOWN":
@@ -1658,31 +1883,48 @@ def flatten_account(config, token, acc_id, acc_num, api_url, env_name):
     return True
 
 def equity_poller_daemon():
-    print("[KillSwitch] Daemon thread started.")
+    print("[KillSwitch] Daemon thread started (1% Daily Equity Loss Stop-Trading + News Calendar Sync).")
     # Keep track of tokens per env
     tokens = {}
     last_refresh = {}
-    
-    # Let's read config for pct
-    personal_pct_str = os.environ.get("ATLAS_PERSONAL_LOSS_PCT", "0.02")
-    firm_pct_str = os.environ.get("ATLAS_FIRM_LOSS_PCT", "0.03")
+
+    # Warm the Red Folder news calendar cache on daemon start
     try:
-        personal_pct = float(personal_pct_str)
-        firm_pct = float(firm_pct_str)
-    except:
-        personal_pct = 0.02
-        firm_pct = 0.03
-        
+        refresh_news_calendar(force=True)
+    except Exception as e:
+        print(f"[NewsLockout] Initial calendar warm error: {e}")
+
     while True:
         try:
+            # Periodically keep the Red Folder news cache fresh in the background
+            refresh_news_calendar(force=False)
+
             configs = get_tradelocker_configs_only(get_active_configs())
-            # For this MVP, we focus on configs that have ATLAS in the name or we apply to all active TradeLocker accounts
             for config in configs:
                 try:
                     env_name = config["name"]
-                    
-                    if "atlas" not in env_name.lower():
-                        continue # Target Atlas for now
+                    env_vars = config.get("env_vars", {})
+
+                    if "atlas" not in env_name.lower() and str(env_vars.get("ENABLE_KILL_SWITCH", "false")).lower() != "true":
+                        continue
+
+                    # Default to 1% (0.01) daily losing equity stop-trading threshold
+                    personal_pct_str = (
+                        env_vars.get("ATLAS_PERSONAL_LOSS_PCT")
+                        or env_vars.get("PERSONAL_LOSS_PCT")
+                        or os.environ.get("ATLAS_PERSONAL_LOSS_PCT", "0.01")
+                    )
+                    firm_pct_str = (
+                        env_vars.get("ATLAS_FIRM_LOSS_PCT")
+                        or env_vars.get("FIRM_LOSS_PCT")
+                        or os.environ.get("ATLAS_FIRM_LOSS_PCT", "0.03")
+                    )
+                    try:
+                        personal_pct = float(personal_pct_str)
+                        firm_pct = float(firm_pct_str)
+                    except Exception:
+                        personal_pct = 0.01
+                        firm_pct = 0.03
                     
                     # Check Token age
                     now_ts = time.time()
@@ -1770,10 +2012,10 @@ def equity_poller_daemon():
                     
                     if projectedBalance <= personal_floor:
                         breached = True
-                        reason = f"Absolute Equity ({projectedBalance}) hit Personal Floor ({personal_floor})"
+                        reason = f"Absolute Equity ({projectedBalance:.2f}) hit {personal_pct*100:.1f}% Personal Floor ({personal_floor:.2f})"
                     elif native_pnl <= -(baseline * personal_pct):
                         breached = True
-                        reason = f"Native P&L ({native_pnl}) exceeded limit ({-baseline * personal_pct})"
+                        reason = f"Daily P&L ({native_pnl:.2f}) hit -{personal_pct*100:.1f}% limit ({-baseline * personal_pct:.2f})"
                     
                     # Update memory cache
                     is_active = get_kill_switch_flag(env_name)
@@ -1783,14 +2025,27 @@ def equity_poller_daemon():
                             "kill_switch_active": is_active or breached,
                             "last_updated": now_ts,
                             "fail_closed": False,
-                            "equity": projectedBalance
+                            "baseline": baseline,
+                            "equity": projectedBalance,
+                            "personal_floor": personal_floor,
+                            "personal_loss_pct": personal_pct,
                         }
                     
                     if breached and not is_active:
                         print(f"[{env_name}] [KillSwitch] TRIPPED! {reason}")
                         set_kill_switch_flag(env_name, True)
-                        # Flatten
-                        flatten_account(config, token, acc_id, acc_num, api_url, env_name)
+                        notify_telegram(
+                            f"🛑 1% Daily Loss Lockout triggered for {env_name}!\n"
+                            f"{reason}\n"
+                            f"Trading is locked for the rest of today (resets at 00:00 UTC)."
+                        )
+                        # Only flatten if not currently inside a Red Folder News restriction window
+                        news_locked, _ = is_news_lockout_active("US30")
+                        should_flatten = str(env_vars.get("KILL_SWITCH_FLATTEN", os.environ.get("KILL_SWITCH_FLATTEN", "true"))).lower() == "true"
+                        if should_flatten and not news_locked:
+                            flatten_account(config, token, acc_id, acc_num, api_url, env_name)
+                        elif news_locked:
+                            print(f"[{env_name}] [KillSwitch] Skipping flatten during active News Lockout window to avoid rule violation.")
                 except Exception as e:
                     print(f"[KillSwitch] Unexpected error for config {config.get('name', 'unknown')}: {e}")
                     import traceback
@@ -1843,9 +2098,17 @@ def check_startup_health():
             notify_telegram(f"❌ {msg}")
             sys.exit(4) # Hard fail as requested
         
+    # Warm Red Folder News Lockout calendar on boot
+    try:
+        high_events = refresh_news_calendar(force=True)
+        usd_events = [e for e in high_events if e["country"] == "USD"]
+        print(f"--- Red Folder News Lockout Ready ({len(usd_events)} USD High-Impact events this week, ±5m buffer) ---")
+    except Exception as e:
+        print(f"[NewsLockout] Startup calendar warm warning: {e}")
+
     # Send heartbeat alert on successful boot to verify master process context
     active_names = ", ".join([c.get("name", "Unknown") for c in configs])
-    msg = f"✅ Wise Steward booted successfully with {len(configs)} active account(s): {active_names}"
+    msg = f"✅ Wise Steward booted successfully with {len(configs)} active account(s): {active_names} (1% Daily Stop + ±5m Red Folder News Lockout ACTIVE)"
     print(msg)
     from notifications import notify_telegram
     notify_telegram(msg)
