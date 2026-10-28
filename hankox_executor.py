@@ -1774,16 +1774,42 @@ def webhook():
             # to a static distance and defeat the trail entirely.
             # trStopOffset (or stopLoss as fallback) is passed straight through.
             # ---------------------------------------------------------------
+            # Check if Render-side env or .env.atlasdemo secret file requests Trailing Stop or Twin Trade
+            cfg_force_trail = any(
+                str(c.get("env_vars", {}).get("FORCE_TRAILING_STOP", "")).lower() == "true"
+                for c in active_configs
+            )
+            cfg_trail_pts = next(
+                (float(c["env_vars"]["TRAIL_STOP_POINTS"]) for c in active_configs if c.get("env_vars", {}).get("TRAIL_STOP_POINTS")),
+                None,
+            )
+            cfg_twin_trail = any(
+                str(c.get("env_vars", {}).get("ENABLE_TWIN_TRAIL", "")).lower() == "true"
+                for c in active_configs
+            )
+            cfg_twin_pts = next(
+                (float(c["env_vars"]["TWIN_TRAIL_POINTS"]) for c in active_configs if c.get("env_vars", {}).get("TWIN_TRAIL_POINTS")),
+                None,
+            )
+
             raw_sl_type = str(data.get("sl_type", data.get("stopLossType", ""))).strip().strip("'\"")
+            force_trail = (
+                os.environ.get("FORCE_TRAILING_STOP", "false").lower() == "true"
+                or cfg_force_trail
+            )
             is_trailing = (
                 raw_sl_type in ("trailingOffset", "trailing", "trailingStop")
                 or str(data.get("trailing", "false")).lower() == "true"
+                or force_trail
             )
 
             if is_trailing:
+                env_trail_pts = float(os.environ.get("TRAIL_STOP_POINTS", 0)) or cfg_trail_pts
                 if data.get("trStopOffset") is not None:
                     trail_raw = float(data.get("trStopOffset"))
                     sl = _convert_to_absolute_distance(trail_raw, symbol, data.get("sl_unit")) if trail_raw > 0 else 0
+                elif env_trail_pts:
+                    sl = _convert_to_absolute_distance(env_trail_pts, symbol, data.get("sl_unit"))
                 elif data.get("sl_points") is not None:
                     sl = float(data.get("sl_points"))
                 else:
@@ -1795,14 +1821,18 @@ def webhook():
                     elif sl_candidate > max_dist and price_val > 0:
                         sl = abs(price_val - sl_candidate)
                     else:
-                        sl = 0
+                        sl = 100.0
                 sl_type = "trailing"
                 print(f"[TRAILING STOP] {symbol} {side} -> trail_dist={sl}")
             else:
                 sl = resolve_offset(symbol, side, 'sl', data, price_val)
                 sl_type = "offset"
 
-            tp = resolve_offset(symbol, side, 'tp', data, price_val)
+            # When FORCE_TRAILING_STOP is active (or strip_tp_on_trail is set), set TP=0 so the trail is the sole exit
+            if force_trail and str(os.environ.get("KEEP_TP_ON_TRAIL", "false")).lower() != "true":
+                tp = 0
+            else:
+                tp = resolve_offset(symbol, side, 'tp', data, price_val)
             tp_type = "offset"
 
             # Generate unique trade ID and attach to this order
@@ -1820,18 +1850,20 @@ def webhook():
             # Fires a second position with a Trailing Stop ('T' badge on TradeLocker)
             # and NO Take Profit (tp=0), using the trailing stop as the exit.
             # Activated via payload ("twin_trade": true or "twin_trail_points": 100)
-            # or Render env var ENABLE_TWIN_TRAIL=true.
+            # or Render / .env.atlasdemo variable ENABLE_TWIN_TRAIL=true.
             # ---------------------------------------------------------------
             twin_enabled = (
                 str(data.get("twin_trade", data.get("twin_trail", ""))).lower() == "true"
                 or data.get("twin_trail_points") is not None
                 or os.environ.get("ENABLE_TWIN_TRAIL", "false").lower() == "true"
+                or cfg_twin_trail
             )
             twin_trade_id = None
             if twin_enabled and not is_trailing:
                 twin_trail_raw = float(
                     data.get("twin_trail_points")
                     or os.environ.get("TWIN_TRAIL_POINTS", 0)
+                    or cfg_twin_pts
                     or sl
                     or 100.0
                 )
