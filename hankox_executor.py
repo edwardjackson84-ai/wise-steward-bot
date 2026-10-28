@@ -1446,6 +1446,36 @@ def view_guardrails():
         "daily_loss_kill_switch": kill_switch_state,
     }), 200
 
+@app.route("/reset-kill-switch", methods=["GET", "POST"])
+def reset_kill_switch():
+    """Manually resets the 1% Daily Loss Kill Switch and re-anchors the baseline to current live equity."""
+    import hmac
+    expected_token = os.environ.get("WEBHOOK_SECRET")
+    if not expected_token:
+        return jsonify({"error": "Service misconfigured"}), 503
+    if not hmac.compare_digest(expected_token, request.args.get("token", "")):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    now_ts = time.time()
+    reset_envs = []
+    with _kill_switch_lock:
+        for env_name, state in list(kill_switch_state.items()):
+            cur_equity = state.get("equity") or state.get("baseline")
+            if cur_equity:
+                set_start_of_day_baseline(env_name, cur_equity, now_ts)
+            set_kill_switch_flag(env_name, False)
+            state["kill_switch_active"] = False
+            state["baseline"] = cur_equity
+            state["last_updated"] = now_ts
+            reset_envs.append(env_name)
+
+    notify_telegram(f"🔄 1% Daily Loss Lockout manually reset for: {', '.join(reset_envs) or 'all accounts'}. Baseline re-anchored to current equity.")
+    return jsonify({
+        "status": "success",
+        "reset_accounts": reset_envs,
+        "daily_loss_kill_switch": kill_switch_state,
+    }), 200
+
 def _validate_absolute_direction(symbol, side, target_type, abs_price, price, source):
     if target_type == 'sl':
         if side == "buy" and abs_price >= price:
@@ -1854,10 +1884,33 @@ def get_start_of_day_ts(env_name):
     except:
         return 0.0
 
-def _get_midnight_utc_ts():
-    now = datetime.utcnow()
-    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return midnight.timestamp()
+def _get_daily_rollover_ts():
+    """
+    Returns the Unix timestamp of the most recent daily trading rollover.
+    Defaults to 17:00 America/New_York (5:00 PM ET / 2:00 PM PT), which is the
+    standard prop-firm & US indices (US30) end-of-day rollover.
+    Can be overridden via DAILY_RESET_HOUR_ET (0-23).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timezone, timedelta
+        ny_tz = timezone(timedelta(hours=-4))
+
+    try:
+        reset_hour = int(os.environ.get("DAILY_RESET_HOUR_ET", "17"))
+    except Exception:
+        reset_hour = 17
+
+    from datetime import timedelta
+    now_ny = datetime.now(tz=ny_tz)
+    rollover_today = now_ny.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
+    if now_ny < rollover_today:
+        rollover_dt = rollover_today - timedelta(days=1)
+    else:
+        rollover_dt = rollover_today
+    return rollover_dt.timestamp()
 
 def flatten_account(config, token, acc_id, acc_num, api_url, env_name):
     print(f"[{env_name}] [KILL SWITCH] Flattening account...")
@@ -1984,38 +2037,46 @@ def equity_poller_daemon():
                             kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
                         continue
                     
-                    # Baseline logic
-                    midnight_ts = _get_midnight_utc_ts()
+                    # Baseline logic (resets daily at 5:00 PM ET / 2:00 PM PT prop-firm EOD rollover)
+                    rollover_ts = _get_daily_rollover_ts()
                     stored_ts = get_start_of_day_ts(env_name)
+                    was_locked = get_kill_switch_flag(env_name)
                     
-                    if stored_ts < midnight_ts:
-                        # Reset Time! Capture baseline
+                    if stored_ts < rollover_ts:
+                        # Daily Rollover! Capture new start-of-day baseline and clear any lockout
                         baseline = max(balance, projectedBalance)
                         set_start_of_day_baseline(env_name, baseline, now_ts)
                         set_kill_switch_flag(env_name, False)
                         print(f"[{env_name}] [KillSwitch] NEW DAY BASELINE CAPTURED: {baseline}")
+                        if was_locked:
+                            notify_telegram(
+                                f"🟢 1% Daily Loss Lockout has RESET for {env_name}!\n"
+                                f"New Start-of-Day Baseline: ${baseline:,.2f} (1% Floor: ${baseline * (1 - personal_pct):,.2f}). Trading is active."
+                            )
                     else:
                         baseline = get_start_of_day_baseline(env_name)
                         if baseline is None:
-                            # Cold start mid-day
-                            baseline = balance - todayNet
+                            # Cold start mid-day: anchor directly to current live equity/balance
+                            baseline = max(balance, projectedBalance)
                             set_start_of_day_baseline(env_name, baseline, now_ts)
-                            print(f"[{env_name}] [KillSwitch] COLD START BASELINE RECONSTRUCTED: {baseline}")
+                            set_kill_switch_flag(env_name, False)
+                            print(f"[{env_name}] [KillSwitch] COLD START BASELINE CAPTURED: {baseline}")
                     
-                    # Breach calculation
+                    # Breach calculation (strictly measured against our captured daily baseline
+                    # so TradeLocker's internal todayNet clock mismatch cannot false-trip after reset)
                     personal_floor = baseline * (1 - personal_pct)
                     firm_floor = baseline * (1 - firm_pct)
-                    native_pnl = todayNet + openNetPnL
+                    daily_pnl = projectedBalance - baseline
                     
                     breached = False
                     reason = ""
                     
                     if projectedBalance <= personal_floor:
                         breached = True
-                        reason = f"Absolute Equity ({projectedBalance:.2f}) hit {personal_pct*100:.1f}% Personal Floor ({personal_floor:.2f})"
-                    elif native_pnl <= -(baseline * personal_pct):
-                        breached = True
-                        reason = f"Daily P&L ({native_pnl:.2f}) hit -{personal_pct*100:.1f}% limit ({-baseline * personal_pct:.2f})"
+                        reason = (
+                            f"Equity (${projectedBalance:,.2f}) hit -{personal_pct*100:.1f}% Daily Stop Floor "
+                            f"(${personal_floor:,.2f} | Daily P&L: ${daily_pnl:,.2f} from ${baseline:,.2f} baseline)"
+                        )
                     
                     # Update memory cache
                     is_active = get_kill_switch_flag(env_name)
@@ -2027,8 +2088,10 @@ def equity_poller_daemon():
                             "fail_closed": False,
                             "baseline": baseline,
                             "equity": projectedBalance,
+                            "daily_pnl": round(daily_pnl, 2),
                             "personal_floor": personal_floor,
                             "personal_loss_pct": personal_pct,
+                            "last_rollover_ts": rollover_ts,
                         }
                     
                     if breached and not is_active:
@@ -2037,7 +2100,7 @@ def equity_poller_daemon():
                         notify_telegram(
                             f"🛑 1% Daily Loss Lockout triggered for {env_name}!\n"
                             f"{reason}\n"
-                            f"Trading is locked for the rest of today (resets at 00:00 UTC)."
+                            f"Trading is locked for the rest of the session (resets at 5:00 PM ET / 2:00 PM PT)."
                         )
                         # Only flatten if not currently inside a Red Folder News restriction window
                         news_locked, _ = is_news_lockout_active("US30")
