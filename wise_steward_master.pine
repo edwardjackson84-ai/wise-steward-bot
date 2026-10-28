@@ -886,12 +886,19 @@ plot(structureBull ? 1 : structureBear ? -1 : 0, "Structure Bias (alert)", displ
 plot(requireConfl ? 1 : 0, "Confluence Required (alert)", display=display.none)
 
 // --- JSON webhook builder (for "Any alert() function call")
+grp_trail_twin  = "Trailing Stop & Twin Trade Settings"
+useTrailingStop = input.bool(false, "Use Trailing Stop ('T' Badge) as Primary Exit (No TP)", group=grp_trail_twin)
+trailStopPts    = input.float(100.0, "Trailing Stop Distance (Points)", minval=1.0, step=1.0, group=grp_trail_twin)
+enableTwinTrade = input.bool(false, "Enable Twin Trade Runner (Order 1 = 1:2 Static + Order 2 = Trail Only)", group=grp_trail_twin)
+
 f_price(float v) => str.tostring(v, format.mintick)
 f_json(string side, float price, float sl, float tp) =>
-    float slp = math.abs(price - sl)
-    float tpp = math.abs(tp - price)
+    float slp = useTrailingStop ? trailStopPts : math.abs(price - sl)
+    float tpp = useTrailingStop ? 0.0 : math.abs(tp - price)
     float rrp = tpp / math.max(slp, syminfo.mintick)
-    string base = '{"action":"entry","strategy":"King David Multi-TF","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","side":"' + side + '","price":' + f_price(price) + ',"sl":' + f_price(sl) + ',"tp":' + f_price(tp) + ',"kd_atr":' + f_price(kd_atr) + ',"atr_len":' + str.tostring(kd_atrLen) + ',"sl_mult":' + str.tostring(atrMultSL) + ',"tp_mult":' + str.tostring(atrMultTP) + ',"sl_points":' + f_price(slp) + ',"tp_points":' + f_price(tpp) + ',"rr":' + f_price(rrp)
+    string slTypeField = useTrailingStop ? ',"stopLossType":"trailingOffset","trStopOffset":' + f_price(trailStopPts) : ""
+    string twinField   = enableTwinTrade ? ',"twin_trade":true,"twin_trail_points":' + f_price(trailStopPts) : ""
+    string base = '{"action":"entry","strategy":"King David Multi-TF","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","side":"' + side + '","price":' + f_price(price) + ',"sl":' + f_price(sl) + ',"tp":' + (useTrailingStop ? "0" : f_price(tp)) + ',"kd_atr":' + f_price(kd_atr) + ',"atr_len":' + str.tostring(kd_atrLen) + ',"sl_mult":' + str.tostring(atrMultSL) + ',"tp_mult":' + str.tostring(atrMultTP) + ',"sl_points":' + f_price(slp) + ',"tp_points":' + f_price(tpp) + ',"rr":' + f_price(rrp) + slTypeField + twinField
     string tail = includeUSD ? ',"usd_per_point":' + str.tostring(usdPerPoint) + ',"contracts":' + str.tostring(contracts) + ',"risk_usd":' + f_price(slp * usdPerPoint * contracts) + ',"reward_usd":' + f_price(tpp * usdPerPoint * contracts) : ""
     base + tail + "}"
 
@@ -1046,15 +1053,18 @@ plotshape(master_buy_signal, title="Master Buy Signal", text="BUY", style=shape.
 plotshape(master_sell_signal, title="Master Sell Signal", text="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.normal)
 
 if master_buy_signal
-    // Assuming ATR based SL for Unified Signal
     float masterLongSL = close - ta.atr(14) * 2
-    float masterLongTP = close + (close - masterLongSL) * 2
-    alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(masterLongSL) + '", "tp": "' + str.tostring(masterLongTP) + '", "signal": "long_entry"}', alert.freq_once_per_bar_close)
+    float masterLongTP = useTrailingStop ? 0.0 : close + (close - masterLongSL) * 2
+    string mSlType = useTrailingStop ? '", "stopLossType": "trailingOffset", "trStopOffset": "' + str.tostring(trailStopPts) : ''
+    string mTwin   = enableTwinTrade ? '", "twin_trade": "true", "twin_trail_points": "' + str.tostring(trailStopPts) : ''
+    alert('{"action": "buy", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(masterLongSL) + '", "tp": "' + str.tostring(masterLongTP) + '", "signal": "long_entry' + mSlType + mTwin + '"}', alert.freq_once_per_bar_close)
     
 if master_sell_signal
     float masterShortSL = close + ta.atr(14) * 2
-    float masterShortTP = close - (masterShortSL - close) * 2
-    alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(masterShortSL) + '", "tp": "' + str.tostring(masterShortTP) + '", "signal": "short_entry"}', alert.freq_once_per_bar_close)
+    float masterShortTP = useTrailingStop ? 0.0 : close - (masterShortSL - close) * 2
+    string mSlTypeS = useTrailingStop ? '", "stopLossType": "trailingOffset", "trStopOffset": "' + str.tostring(trailStopPts) : ''
+    string mTwinS   = enableTwinTrade ? '", "twin_trade": "true", "twin_trail_points": "' + str.tostring(trailStopPts) : ''
+    alert('{"action": "sell", "symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "price": "' + str.tostring(close) + '", "sl": "' + str.tostring(masterShortSL) + '", "tp": "' + str.tostring(masterShortTP) + '", "signal": "short_entry' + mSlTypeS + mTwinS + '"}', alert.freq_once_per_bar_close)
 
 // ============================================================================
 // PART 4: FVG + LIQUIDITY GRAB CONFLUENCE (3M / 15M)

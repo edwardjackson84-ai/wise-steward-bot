@@ -1587,8 +1587,10 @@ def webhook():
         signal = data.get("signal", action)
         qty = str(data.get("contracts", data.get("qty", "")))
         bar_time = str(data.get("bar_time", ""))
+        sl_mode_tag = str(data.get("stopLossType", data.get("sl_type", "static")))
+        twin_tag = str(data.get("twin_trade", data.get("twin_trail", "")))
         
-        fingerprint = f"{symbol}_{action}_{signal}_{bar_time or qty}"
+        fingerprint = f"{symbol}_{action}_{signal}_{sl_mode_tag}_{twin_tag}_{bar_time or qty}"
         
         # Kill Switch Fast-Fail Check
         now_ts = time.time()
@@ -1772,18 +1774,30 @@ def webhook():
             # to a static distance and defeat the trail entirely.
             # trStopOffset (or stopLoss as fallback) is passed straight through.
             # ---------------------------------------------------------------
-            raw_sl_type = data.get("sl_type", data.get("stopLossType", ""))
-            is_trailing = raw_sl_type in ("trailingOffset", "trailing", "trailingStop")
+            raw_sl_type = str(data.get("sl_type", data.get("stopLossType", ""))).strip().strip("'\"")
+            is_trailing = (
+                raw_sl_type in ("trailingOffset", "trailing", "trailingStop")
+                or str(data.get("trailing", "false")).lower() == "true"
+            )
 
             if is_trailing:
-                # Convert trailing offset from pips to absolute distance for tick math
-                trail_raw = float(data.get("trStopOffset", data.get("sl", data.get("stopLoss", 0))))
-                if trail_raw > 0:
-                    sl = _convert_to_absolute_distance(trail_raw, symbol, data.get("sl_unit"))
+                if data.get("trStopOffset") is not None:
+                    trail_raw = float(data.get("trStopOffset"))
+                    sl = _convert_to_absolute_distance(trail_raw, symbol, data.get("sl_unit")) if trail_raw > 0 else 0
+                elif data.get("sl_points") is not None:
+                    sl = float(data.get("sl_points"))
                 else:
-                    sl = 0
+                    # Resolve whether sl is an offset (e.g. 100) or an absolute price level
+                    sl_candidate = float(data.get("sl", data.get("stopLoss", 0)))
+                    max_dist = _MAX_ABSOLUTE_DISTANCE.get(_get_asset_class(symbol), 5000.0)
+                    if 0 < sl_candidate <= max_dist:
+                        sl = _convert_to_absolute_distance(sl_candidate, symbol, data.get("sl_unit"))
+                    elif sl_candidate > max_dist and price_val > 0:
+                        sl = abs(price_val - sl_candidate)
+                    else:
+                        sl = 0
                 sl_type = "trailing"
-                print(f"[TRAILING STOP] {symbol} {side} trail_raw={trail_raw} -> trail_dist={sl}")
+                print(f"[TRAILING STOP] {symbol} {side} -> trail_dist={sl}")
             else:
                 sl = resolve_offset(symbol, side, 'sl', data, price_val)
                 sl_type = "offset"
@@ -1801,11 +1815,42 @@ def webhook():
             )
             print(f"Dispatch results: {results}")
 
-            return jsonify({
+            # ---------------------------------------------------------------
+            # TWIN TRADE RUNNER (Optional Secondary Trailing Stop Position)
+            # Fires a second position with a Trailing Stop ('T' badge on TradeLocker)
+            # and NO Take Profit (tp=0), using the trailing stop as the exit.
+            # Activated via payload ("twin_trade": true or "twin_trail_points": 100)
+            # or Render env var ENABLE_TWIN_TRAIL=true.
+            # ---------------------------------------------------------------
+            twin_enabled = (
+                str(data.get("twin_trade", data.get("twin_trail", ""))).lower() == "true"
+                or data.get("twin_trail_points") is not None
+                or os.environ.get("ENABLE_TWIN_TRAIL", "false").lower() == "true"
+            )
+            twin_trade_id = None
+            if twin_enabled and not is_trailing:
+                twin_trail_raw = float(
+                    data.get("twin_trail_points")
+                    or os.environ.get("TWIN_TRAIL_POINTS", 0)
+                    or sl
+                    or 100.0
+                )
+                twin_sl = _convert_to_absolute_distance(twin_trail_raw, symbol, data.get("sl_unit")) if twin_trail_raw > 0 else sl
+                twin_trade_id = generate_trade_id(f"{signal}_TWIN_TRAIL", symbol, timeframe)
+                print(f"[TWIN TRADE] Opening runner {twin_trade_id}: {side} {qty} {symbol} | Trail SL={twin_sl} (trailingOffset) TP=0 (trail-only exit)")
+                place_market_orders_sync(
+                    active_configs, symbol, side, qty, twin_sl, 0,
+                    trade_id=twin_trade_id, signal=f"{signal}_twin_trail", sl_type="trailing", tp_type="offset"
+                )
+
+            resp_payload = {
                 "status": "accepted",
                 "trade_id": trade_id,
                 "message": "Dispatch enqueued — check /registry for outcome"
-            }), 200
+            }
+            if twin_trade_id:
+                resp_payload["twin_trade_id"] = twin_trade_id
+            return jsonify(resp_payload), 200
 
         else:
             print(f"Unknown action '{action}' — ignoring.")
