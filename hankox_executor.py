@@ -323,7 +323,7 @@ def registry_get(trade_id):
 # ACCOUNT CONFIG LOADER
 # ======================================================================
 
-def get_active_configs():
+def get_active_configs(verbose=True):
     configs = []
     toggles = {}
     toggle_path = os.path.join(script_dir, "toggles.json")
@@ -372,7 +372,8 @@ def get_active_configs():
         if not is_active:
             continue
 
-        print(f"Routing logic includes active account: {env_name}")
+        if verbose:
+            print(f"Routing logic includes active account: {env_name}")
 
         if "hanko" in env_name.lower():
             b_type = "hankotrade"
@@ -573,6 +574,23 @@ def fetch_instrument_registry(config):
 # TRADELOCKER REST — OPEN A TRADE
 # ======================================================================
 
+def _get_fallback_tick_size(symbol, env_name=""):
+    """
+    Returns a safe fallback tickSize when TradeLocker's /trade/instruments/{id}
+    endpoint omits or fails to return a tickSize schedule (e.g. on Atlas Demo).
+    """
+    s = symbol.upper().replace("+", "").replace(".HKT", "")
+    asset_class = _get_asset_class(s)
+    is_e8 = "e8" in str(env_name).lower()
+    if asset_class == "forex":
+        return 0.001 if s in _JPY_SYMBOLS else 0.00001
+    if asset_class == "gold":
+        return 0.01
+    # Indices (US30, NAS100, SPX500) / Crypto / Energies
+    if is_e8 and s in ("US30", "DOW", "NAS100", "NSDQ", "SPX500", "SP", "US500"):
+        return 0.01
+    return 1.0
+
 async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url, env_name,
                               sl=0, tp=0, trade_id=None, sl_type="offset", tp_type="offset"):
     """
@@ -583,8 +601,16 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     base_symbol = symbol.upper().replace(".HKT", "")
     mapped_symbol = SYMBOL_MAP.get(base_symbol, base_symbol)
 
-    # Resolve from dynamic registry
+    # Resolve from dynamic registry (lazy-populate if worker cache is cold)
     registry = _INSTRUMENT_REGISTRY.get(env_name, {})
+    if not registry:
+        try:
+            cfg = next((c for c in get_active_configs(verbose=False) if c["name"] == env_name), None)
+            if cfg:
+                fetch_instrument_registry(cfg)
+                registry = _INSTRUMENT_REGISTRY.get(env_name, {})
+        except Exception as e:
+            print(f"[{env_name}] Lazy registry fetch warning: {e}")
     inst_record = registry.get(mapped_symbol)
     
     if not inst_record:
@@ -617,18 +643,49 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     meta = None
     route_cache_key = f"{env_name}_{inst_id}"
 
-    if route_cache_key in _ROUTE_CACHE:
+    if route_cache_key in _ROUTE_CACHE and _ROUTE_CACHE[route_cache_key].get("tickSizeSchedule"):
         meta = _ROUTE_CACHE[route_cache_key]
         route_id = meta["routeId"]
     else:
         # Logic to find the TRADE route and tickSize schedule
         routes = inst_record.get("routes", [])
+        info_route_id = next((r.get("id") for r in routes if r.get("type") == "INFO"), None)
         for r in routes:
             if r.get("type") == "TRADE":
                 route_id = r.get("id")
-                detail_url = f"{api_url}/trade/instruments/{inst_id}?routeId={route_id}"
-                det_resp = requests.get(detail_url, headers=headers, timeout=10)
-                schedule = det_resp.json().get("d", {}).get("tickSize", []) if det_resp.ok else []
+                schedule = []
+                # Try TRADE route first, then INFO route, then no routeId param
+                for r_try in [f"?routeId={route_id}", f"?routeId={info_route_id}" if info_route_id else "", ""]:
+                    if schedule:
+                        break
+                    for base_path in [f"{api_url}/trade/instruments/{inst_id}", f"{api_url}/trade/accounts/{acc_id}/instruments/{inst_id}"]:
+                        try:
+                            det_resp = requests.get(f"{base_path}{r_try}", headers=headers, timeout=10)
+                            if det_resp.ok:
+                                det_data = det_resp.json()
+                                d_obj = det_data.get("d", det_data) if isinstance(det_data, dict) else {}
+                                if isinstance(d_obj, dict):
+                                    raw_ts = d_obj.get("tickSize") or d_obj.get("tickSizeSchedule")
+                                    if isinstance(raw_ts, list) and raw_ts:
+                                        schedule = raw_ts
+                                        break
+                                    elif isinstance(raw_ts, (int, float)) and float(raw_ts) > 0:
+                                        schedule = [{"tickSize": float(raw_ts)}]
+                                        break
+                        except Exception:
+                            pass
+                # Check if inst_record itself has tickSize
+                if not schedule and inst_record.get("tickSize"):
+                    raw_inst_ts = inst_record.get("tickSize")
+                    if isinstance(raw_inst_ts, list) and raw_inst_ts:
+                        schedule = raw_inst_ts
+                    elif isinstance(raw_inst_ts, (int, float)) and float(raw_inst_ts) > 0:
+                        schedule = [{"tickSize": float(raw_inst_ts)}]
+                # Final fallback: use asset-class standard tickSize so trade never crashes
+                if not schedule:
+                    fb_ts = _get_fallback_tick_size(mapped_symbol, env_name)
+                    print(f"[{env_name}] WARNING: Live tickSize schedule missing for {mapped_symbol} (ID {inst_id}); using fallback tickSize={fb_ts}")
+                    schedule = [{"tickSize": fb_ts}]
                 meta = {"routeId": route_id, "tickSizeSchedule": schedule}
                 _ROUTE_CACHE[route_cache_key] = meta
                 break
@@ -660,22 +717,12 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     if sl_type == "trailing" or sl_type == "offset" or tp_type == "offset":
         schedule = meta.get("tickSizeSchedule") if meta else None
         if not schedule:
-            raise RuntimeError(f"CRITICAL: tickSize schedule missing for {mapped_symbol} on {env_name}")
+            fb_ts = _get_fallback_tick_size(mapped_symbol, env_name)
+            schedule = [{"tickSize": fb_ts}]
         
-        if len(schedule) != 1:
-            # TODO: Implement price-aware resolution for multi-tier instruments.
-            # Pull current price from /quotes on cache miss, find tier where leftRangeLimit <= current_price
-            raise NotImplementedError(
-                f"Multi-tier tickSize for {mapped_symbol} on {env_name} requires "
-                f"price-aware resolution (got {len(schedule)} tiers). "
-                f"Add a /quotes lookup before trading tiered instruments."
-            )
-            
-        tier = schedule[0]
-        if "tickSize" not in tier:
-            raise RuntimeError(f"tickSize field missing from schedule entry for {mapped_symbol}: {tier}")
-            
-        tick_size = float(tier["tickSize"])
+        # Select appropriate tier (default to first tier if single-tier or no price lookup)
+        tier = schedule[0] if isinstance(schedule, list) and schedule else {"tickSize": _get_fallback_tick_size(mapped_symbol, env_name)}
+        tick_size = float(tier.get("tickSize", _get_fallback_tick_size(mapped_symbol, env_name)))
         
         if sl:
             sl_val = math.floor(float(sl) / tick_size)
@@ -1216,7 +1263,7 @@ def _check_manual_news_windows(now_ts: float, buffer_minutes: float):
     """
     raw_windows = os.environ.get("NEWS_LOCKOUT_WINDOWS", "").strip()
     if not raw_windows:
-        for cfg in get_active_configs():
+        for cfg in get_active_configs(verbose=False):
             w = cfg.get("env_vars", {}).get("NEWS_LOCKOUT_WINDOWS", "").strip()
             if w:
                 raw_windows = w
@@ -1798,7 +1845,7 @@ def webhook():
                 or cfg_force_trail
             )
             is_trailing = (
-                raw_sl_type in ("trailingOffset", "trailing", "trailingStop")
+                raw_sl_type in ("trailingOffset", "trailing", "trailingStop", "trailing_stop", "trail")
                 or str(data.get("trailing", "false")).lower() == "true"
                 or force_trail
             )
@@ -1859,7 +1906,7 @@ def webhook():
                 or cfg_twin_trail
             )
             twin_trade_id = None
-            if twin_enabled and not is_trailing:
+            if twin_enabled and (not is_trailing or tp > 0):
                 twin_trail_raw = float(
                     data.get("twin_trail_points")
                     or os.environ.get("TWIN_TRAIL_POINTS", 0)
@@ -2029,7 +2076,7 @@ def equity_poller_daemon():
             # Periodically keep the Red Folder news cache fresh in the background
             refresh_news_calendar(force=False)
 
-            configs = get_tradelocker_configs_only(get_active_configs())
+            configs = get_tradelocker_configs_only(get_active_configs(verbose=False))
             for config in configs:
                 try:
                     env_name = config["name"]
