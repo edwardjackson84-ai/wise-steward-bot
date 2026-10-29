@@ -210,7 +210,7 @@ def place_order(api_url, token, account_id, acc_num, signal_data, multiplier=1.0
     order_url = f"{api_url}/trade/accounts/{account_id}/orders"
     
     # Parse generic defaults or Oliver Velez specific fields
-    base_qty = signal_data.get("contracts", signal_data.get("qty", 1.0))
+    base_qty = signal_data.get("contracts", signal_data.get("qty", 0.01))
     try:
         final_qty = float(base_qty) * multiplier
     except ValueError:

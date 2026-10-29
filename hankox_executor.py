@@ -360,9 +360,10 @@ def get_active_configs(verbose=True):
                 import json
                 with open(cloud_settings_path, "r") as f:
                     cs = json.load(f)
-                    if env_name in cs:
-                        for k, v in cs[env_name].items():
-                            vals[k] = v
+                    for cs_key, cs_vals in cs.items():
+                        if cs_key == env_name or os.path.basename(cs_key) == env_name:
+                            for k, v in cs_vals.items():
+                                vals[k] = v
             except Exception as e:
                 print(f"Error reading cloud_settings.json: {e}")
                 
@@ -1010,15 +1011,19 @@ async def place_multi_orders_async(active_configs, symbol, side, qty,
                                     sl=0, tp=0, trade_id=None, signal="", sl_type="offset", tp_type="offset"):
     tasks = []
     for config in active_configs:
-        config_qty = qty
+        config_qty = float(os.environ.get("DEFAULT_LOT_SIZE", 0.01))
         if "env_vars" in config:
             sym_qty = float(config["env_vars"].get(f"LOT_SIZE_{symbol}", 0.0))
             if sym_qty > 0:
                 config_qty = sym_qty
             else:
-                base_qty = float(config["env_vars"].get("BASE_LOT_SIZE", 0.0))
-                if base_qty > 0:
+                base_qty = float(config["env_vars"].get("BASE_LOT_SIZE", 0.01))
+                if base_qty > 0 and str(os.environ.get("USE_ENV_BASE_LOT_SIZE", "false")).lower() == "true":
                     config_qty = base_qty
+                elif 0 < qty < 1.0:
+                    config_qty = qty
+        elif 0 < qty < 1.0:
+            config_qty = qty
 
         if trade_id:
             registry_add_pending(trade_id, symbol, side, config_qty, signal, config["name"])
@@ -1783,9 +1788,9 @@ def webhook():
         # OPEN A TRADE (buy / sell / long / short / entry)
         # ==============================================================
         elif action in ("buy", "sell", "long", "short", "entry"):
-            # qty parsed here is the baseline payload quantity. It will be overridden
-            # per-broker dynamically in place_multi_orders_async based on each active config.
-            qty = float(data.get("contracts", data.get("qty", 0.01)))
+            # Default to 0.01 lot size (1 micro lot) unless overridden below
+            raw_qty = float(data.get("contracts", data.get("qty", 0.01)))
+            qty = raw_qty if 0 < raw_qty < 1.0 else float(os.environ.get("DEFAULT_LOT_SIZE", 0.01))
 
             raw_side   = data.get("side", "").lower()
             raw_action = action

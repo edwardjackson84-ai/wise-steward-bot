@@ -821,7 +821,7 @@ kd_atr = ta.atr(kd_atrLen)
 
 // === US30 ATR risk HUD (edit $/pt & size) ===
 usdPerPoint = input.float(1.00, "US30 $ per point (per contract)", step=0.01, group=groupRisk)
-contracts   = input.float(1.00, "Contracts", step=0.01, group=groupRisk)
+contracts   = input.float(0.01, "Contracts", step=0.01, group=groupRisk)
 slPts       = kd_atr * atrMultSL
 tpPts       = kd_atr * atrMultTP
 riskUsd     = slPts * usdPerPoint * contracts
