@@ -1849,10 +1849,23 @@ def webhook():
                 os.environ.get("FORCE_TRAILING_STOP", "false").lower() == "true"
                 or cfg_force_trail
             )
+            twin_enabled = (
+                str(data.get("twin_trade", data.get("twin_trail", ""))).lower() == "true"
+                or data.get("twin_trail_points") is not None
+                or os.environ.get("ENABLE_TWIN_TRAIL", "false").lower() == "true"
+                or cfg_twin_trail
+            )
+            # When Twin Trade is enabled (and FORCE_TRAILING_STOP is not forcing every order to trail),
+            # Trade 1 uses a static SL + TP ("offset") while Trade 2 (the Twin Runner) uses a Trailing Stop ("trailing", TP=0).
             is_trailing = (
-                raw_sl_type in ("trailingOffset", "trailing", "trailingStop", "trailing_stop", "trail")
-                or str(data.get("trailing", "false")).lower() == "true"
-                or force_trail
+                force_trail
+                or (
+                    not twin_enabled
+                    and (
+                        raw_sl_type in ("trailingOffset", "trailing", "trailingStop", "trailing_stop", "trail")
+                        or str(data.get("trailing", "false")).lower() == "true"
+                    )
+                )
             )
 
             if is_trailing:
@@ -1904,12 +1917,6 @@ def webhook():
             # Activated via payload ("twin_trade": true or "twin_trail_points": 100)
             # or Render / .env.atlasdemo variable ENABLE_TWIN_TRAIL=true.
             # ---------------------------------------------------------------
-            twin_enabled = (
-                str(data.get("twin_trade", data.get("twin_trail", ""))).lower() == "true"
-                or data.get("twin_trail_points") is not None
-                or os.environ.get("ENABLE_TWIN_TRAIL", "false").lower() == "true"
-                or cfg_twin_trail
-            )
             twin_trade_id = None
             if twin_enabled and (not is_trailing or tp > 0):
                 twin_trail_raw = float(
