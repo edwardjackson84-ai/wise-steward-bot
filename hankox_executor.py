@@ -420,55 +420,120 @@ def get_tradelocker_configs_only(active_configs):
 # AUTHENTICATION
 # ======================================================================
 
-def authenticate_tradelocker(config):
-    auth_url = f"{config['api_url']}/auth/jwt/token"
-    payload = {
-        "email": config["email"],
-        "password": config["password"],
-        "server": config["server"]
-    }
-    print(f"[{config['name']}] Authenticating via TradeLocker REST...")
-    resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-    if not resp.ok:
-        notify_telegram(f"❌ {config['name']} auth failed: {resp.text[:200]}")
-        raise Exception(f"TradeLocker Auth failed: {resp.text}")
-    token = resp.json().get("accessToken")
-    acc_id = None
-    
-    if not acc_id:
+_TL_AUTH_CACHE = {}
+_TL_AUTH_LOCK = threading.Lock()
+_TL_TOKEN_TTL_SECONDS = 2400  # Reuse token + account index for 40 minutes
+
+def invalidate_tradelocker_auth_cache(env_name):
+    with _TL_AUTH_LOCK:
+        _TL_AUTH_CACHE.pop(env_name, None)
+
+def authenticate_tradelocker(config, force_refresh=False):
+    env_name = config.get("name", "Unknown")
+    now_ts = time.time()
+
+    if not force_refresh:
+        with _TL_AUTH_LOCK:
+            cached = _TL_AUTH_CACHE.get(env_name)
+            if cached and (now_ts - cached["ts"]) < _TL_TOKEN_TTL_SECONDS:
+                return cached["token"], cached["acc_id"], cached["acc_num"]
+
+    with _TL_AUTH_LOCK:
+        # Double-check after acquiring lock so concurrent threads don't stampede TradeLocker
+        if not force_refresh:
+            cached = _TL_AUTH_CACHE.get(env_name)
+            if cached and (time.time() - cached["ts"]) < _TL_TOKEN_TTL_SECONDS:
+                return cached["token"], cached["acc_id"], cached["acc_num"]
+
+        auth_url = f"{config['api_url']}/auth/jwt/token"
+        payload = {
+            "email": config["email"],
+            "password": config["password"],
+            "server": config["server"]
+        }
+        print(f"[{env_name}] Authenticating via TradeLocker REST...")
+
+        last_err = None
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+                break
+            except Exception as e:
+                last_err = e
+                print(f"[{env_name}] Auth token request retry {attempt + 1}/3 after error: {e}", flush=True)
+                time.sleep(1.5 * (attempt + 1))
+        if resp is None:
+            raise Exception(f"TradeLocker Auth network timeout after 3 attempts: {last_err}")
+
+        if not resp.ok:
+            notify_telegram(f"❌ {env_name} auth failed: {resp.text[:200]}")
+            raise Exception(f"TradeLocker Auth failed: {resp.text}")
+        token = resp.json().get("accessToken")
+
+        # Keep cached acc_id / acc_num if already discovered in this process
+        prev_cached = _TL_AUTH_CACHE.get(env_name)
+        if prev_cached and prev_cached.get("acc_id") and prev_cached.get("acc_num") is not None:
+            matched_acc_id = prev_cached["acc_id"]
+            matched_acc_num = prev_cached["acc_num"]
+            _TL_AUTH_CACHE[env_name] = {
+                "token": token,
+                "acc_id": matched_acc_id,
+                "acc_num": matched_acc_num,
+                "ts": time.time(),
+            }
+            return token, matched_acc_id, matched_acc_num
+
         import re
-        print(f"[{config['name']}] FETCHING ALL ACCOUNTS TO DISCOVER INDEX...", flush=True)
-        r2 = requests.get(f"{config['api_url']}/auth/jwt/all-accounts", headers={"Authorization": f"Bearer {token}"}, timeout=10)
-        
+        print(f"[{env_name}] FETCHING ALL ACCOUNTS TO DISCOVER INDEX...", flush=True)
+        r2 = None
+        last_err = None
+        for attempt in range(3):
+            try:
+                r2 = requests.get(f"{config['api_url']}/auth/jwt/all-accounts", headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                break
+            except Exception as e:
+                last_err = e
+                print(f"[{env_name}] all-accounts request retry {attempt + 1}/3 after error: {e}", flush=True)
+                time.sleep(1.5 * (attempt + 1))
+        if r2 is None:
+            raise Exception(f"Failed to fetch all-accounts for {env_name} after 3 attempts: {last_err}")
+
         if not r2.ok:
-            raise Exception(f"Failed to fetch all-accounts for {config['name']}: {r2.text}")
-            
+            raise Exception(f"Failed to fetch all-accounts for {env_name}: {r2.text}")
+
         all_accounts_data = r2.json()
         accounts_list = all_accounts_data.get("accounts", []) if isinstance(all_accounts_data, dict) else all_accounts_data
-        
+
         raw_acct_id = str(config.get("account_id", "") or config.get("acc_num", ""))
         target_account_id = re.sub(r'\D', '', raw_acct_id)
-        
+
         matched_acc_num = None
         matched_acc_id = None
-        
-        print(f"[{config['name']}] TARGET INTEGER ACCOUNT ID: '{target_account_id}'", flush=True)
-        
+
+        print(f"[{env_name}] TARGET INTEGER ACCOUNT ID: '{target_account_id}'", flush=True)
+
         for acc in accounts_list:
             acc_id_str = re.sub(r'\D', '', str(acc.get("id", "")))
-            print(f"[{config['name']}] Comparing API accountId '{acc_id_str}' with TARGET '{target_account_id}'", flush=True)
+            print(f"[{env_name}] Comparing API accountId '{acc_id_str}' with TARGET '{target_account_id}'", flush=True)
             if acc_id_str == target_account_id:
                 matched_acc_num = acc.get("accNum")
                 matched_acc_id = acc.get("id")
                 break
-                
+
         if matched_acc_num is None:
-            msg = f"CRITICAL: Account ID {target_account_id} not found in all-accounts for {config['name']}! Halting."
+            msg = f"CRITICAL: Account ID {target_account_id} not found in all-accounts for {env_name}! Halting."
             print(msg, flush=True)
             raise Exception(msg)
-            
-        print(f"[{config['name']}] Found match! accNum index: {matched_acc_num}, accountId: {matched_acc_id}", flush=True)
-        
+
+        print(f"[{env_name}] Found match! accNum index: {matched_acc_num}, accountId: {matched_acc_id}", flush=True)
+
+        _TL_AUTH_CACHE[env_name] = {
+            "token": token,
+            "acc_id": matched_acc_id,
+            "acc_num": matched_acc_num,
+            "ts": time.time(),
+        }
         return token, matched_acc_id, matched_acc_num
 
 def authenticate_hankotrade(config):
@@ -775,18 +840,47 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
 
     safe_headers = {k: ("***" if k.lower() == 'authorization' else v) for k, v in headers.items()}
     print(f"[{env_name}] OUTBOUND REST: URL={order_url} Headers={json.dumps(safe_headers)} Body={json.dumps(payload)}", flush=True)
-    resp = requests.post(order_url, json=payload, headers=headers, timeout=10)
+
+    resp = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(order_url, json=payload, headers=headers, timeout=15)
+            if resp.status_code == 401 and attempt == 0:
+                print(f"[{env_name}] Order got 401 Unauthorized — refreshing cached token and retrying...", flush=True)
+                invalidate_tradelocker_auth_cache(env_name)
+                cfg = next((c for c in get_active_configs(verbose=False) if c["name"] == env_name), None)
+                if cfg:
+                    token, acc_id, acc_num = authenticate_tradelocker(cfg, force_refresh=True)
+                    headers["Authorization"] = f"Bearer {token}"
+                    headers["accNum"] = str(acc_num)
+                    continue
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[{env_name}] Order POST retry {attempt + 1}/3 after network error: {e}", flush=True)
+            time.sleep(1.5 * (attempt + 1))
+
+    if resp is None:
+        err_msg = f"Order POST timed out after 3 attempts: {last_err}"
+        print(f"[{env_name}] {err_msg}", flush=True)
+        notify_telegram(f"❌ {env_name} order network timeout: {mapped_symbol} {side} {qty}\n{last_err}")
+        if trade_id:
+            registry_mark_failed(trade_id, env_name, err_msg)
+        return None
+
     print(f"[{env_name}] REST RESPONSE: Status={resp.status_code} Body={resp.text}", flush=True)
 
     if resp.ok:
         resp_data = resp.json()
         print(f"[{env_name}] REST Order Success: {resp.text}")
 
-        # TradeLocker returns orderId inside the response
+        # TradeLocker returns orderId inside {"s":"ok","d":{"orderId":"..."}}
         broker_order_id = (
-            str(resp_data.get("orderId", ""))
+            str(resp_data.get("d", {}).get("orderId", "") if isinstance(resp_data.get("d"), dict) else "")
+            or str(resp_data.get("orderId", ""))
             or str(resp_data.get("id", ""))
-            or str(resp_data.get("data", {}).get("orderId", ""))
+            or str(resp_data.get("data", {}).get("orderId", "") if isinstance(resp_data.get("data"), dict) else "")
         )
 
         if trade_id:
@@ -2137,6 +2231,7 @@ def equity_poller_daemon():
                         
                         if resp.status_code == 401:
                             # Token expired, force refresh next loop
+                            invalidate_tradelocker_auth_cache(env_name)
                             last_refresh[env_name] = 0
                             continue
                         elif not resp.ok:
