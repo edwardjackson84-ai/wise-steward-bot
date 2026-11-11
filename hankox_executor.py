@@ -423,6 +423,18 @@ def get_tradelocker_configs_only(active_configs):
 _TL_AUTH_CACHE = {}
 _TL_AUTH_LOCK = threading.Lock()
 _TL_TOKEN_TTL_SECONDS = 2400  # Reuse token + account index for 40 minutes
+_TL_RATE_LIMIT_UNTIL = {}     # env_name -> unix timestamp when 429 cooldown expires
+
+def _summarize_http_error(resp):
+    """Returns a concise, single-line summary of an HTTP error (stripping Cloudflare HTML pages)."""
+    if resp is None:
+        return "No response"
+    text = (resp.text or "").strip()
+    if resp.status_code == 429 or "Error 1015" in text or "rate limited" in text.lower():
+        return f"HTTP {resp.status_code} Cloudflare Rate Limit (Error 1015 - temporary IP cooldown)"
+    if text.lower().startswith("<!doctype html") or "<html" in text.lower():
+        return f"HTTP {resp.status_code} HTML Error Page from Cloudflare/Server"
+    return f"HTTP {resp.status_code}: {text[:180]}"
 
 def invalidate_tradelocker_auth_cache(env_name):
     with _TL_AUTH_LOCK:
@@ -458,6 +470,12 @@ def authenticate_tradelocker(config, force_refresh=False):
         for attempt in range(3):
             try:
                 resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+                if resp.status_code == 429:
+                    _TL_RATE_LIMIT_UNTIL[env_name] = time.time() + 120
+                    print(f"[{env_name}] Auth hit {_summarize_http_error(resp)} — backing off...", flush=True)
+                    if attempt < 2:
+                        time.sleep(5 * (attempt + 1))
+                        continue
                 break
             except Exception as e:
                 last_err = e
@@ -467,8 +485,9 @@ def authenticate_tradelocker(config, force_refresh=False):
             raise Exception(f"TradeLocker Auth network timeout after 3 attempts: {last_err}")
 
         if not resp.ok:
-            notify_telegram(f"❌ {env_name} auth failed: {resp.text[:200]}")
-            raise Exception(f"TradeLocker Auth failed: {resp.text}")
+            short_err = _summarize_http_error(resp)
+            notify_telegram(f"❌ {env_name} auth failed: {short_err}")
+            raise Exception(f"TradeLocker Auth failed: {short_err}")
         token = resp.json().get("accessToken")
 
         # Keep cached acc_id / acc_num if already discovered in this process
@@ -491,6 +510,11 @@ def authenticate_tradelocker(config, force_refresh=False):
         for attempt in range(3):
             try:
                 r2 = requests.get(f"{config['api_url']}/auth/jwt/all-accounts", headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                if r2.status_code == 429:
+                    _TL_RATE_LIMIT_UNTIL[env_name] = time.time() + 120
+                    if attempt < 2:
+                        time.sleep(5 * (attempt + 1))
+                        continue
                 break
             except Exception as e:
                 last_err = e
@@ -500,7 +524,7 @@ def authenticate_tradelocker(config, force_refresh=False):
             raise Exception(f"Failed to fetch all-accounts for {env_name} after 3 attempts: {last_err}")
 
         if not r2.ok:
-            raise Exception(f"Failed to fetch all-accounts for {env_name}: {r2.text}")
+            raise Exception(f"Failed to fetch all-accounts for {env_name}: {_summarize_http_error(r2)}")
 
         all_accounts_data = r2.json()
         accounts_list = all_accounts_data.get("accounts", []) if isinstance(all_accounts_data, dict) else all_accounts_data
@@ -715,42 +739,35 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     else:
         # Logic to find the TRADE route and tickSize schedule
         routes = inst_record.get("routes", [])
-        info_route_id = next((r.get("id") for r in routes if r.get("type") == "INFO"), None)
         for r in routes:
             if r.get("type") == "TRADE":
                 route_id = r.get("id")
                 schedule = []
-                # Try TRADE route first, then INFO route, then no routeId param
-                for r_try in [f"?routeId={route_id}", f"?routeId={info_route_id}" if info_route_id else "", ""]:
-                    if schedule:
-                        break
-                    for base_path in [f"{api_url}/trade/instruments/{inst_id}", f"{api_url}/trade/accounts/{acc_id}/instruments/{inst_id}"]:
-                        try:
-                            det_resp = requests.get(f"{base_path}{r_try}", headers=headers, timeout=10)
-                            if det_resp.ok:
-                                det_data = det_resp.json()
-                                d_obj = det_data.get("d", det_data) if isinstance(det_data, dict) else {}
-                                if isinstance(d_obj, dict):
-                                    raw_ts = d_obj.get("tickSize") or d_obj.get("tickSizeSchedule")
-                                    if isinstance(raw_ts, list) and raw_ts:
-                                        schedule = raw_ts
-                                        break
-                                    elif isinstance(raw_ts, (int, float)) and float(raw_ts) > 0:
-                                        schedule = [{"tickSize": float(raw_ts)}]
-                                        break
-                        except Exception:
-                            pass
-                # Check if inst_record itself has tickSize
-                if not schedule and inst_record.get("tickSize"):
+                # 1. Prefer tickSize directly from cached instrument registry (0 extra API calls)
+                if inst_record.get("tickSize"):
                     raw_inst_ts = inst_record.get("tickSize")
                     if isinstance(raw_inst_ts, list) and raw_inst_ts:
                         schedule = raw_inst_ts
                     elif isinstance(raw_inst_ts, (int, float)) and float(raw_inst_ts) > 0:
                         schedule = [{"tickSize": float(raw_inst_ts)}]
-                # Final fallback: use asset-class standard tickSize so trade never crashes
+                # 2. Only query /trade/instruments/{id} if not on Atlas Demo (which omits tickSize schedule)
+                if not schedule and "atlas" not in str(env_name).lower():
+                    try:
+                        det_resp = requests.get(f"{api_url}/trade/instruments/{inst_id}?routeId={route_id}", headers=headers, timeout=10)
+                        if det_resp.ok:
+                            det_data = det_resp.json()
+                            d_obj = det_data.get("d", det_data) if isinstance(det_data, dict) else {}
+                            if isinstance(d_obj, dict):
+                                raw_ts = d_obj.get("tickSize") or d_obj.get("tickSizeSchedule")
+                                if isinstance(raw_ts, list) and raw_ts:
+                                    schedule = raw_ts
+                                elif isinstance(raw_ts, (int, float)) and float(raw_ts) > 0:
+                                    schedule = [{"tickSize": float(raw_ts)}]
+                    except Exception:
+                        pass
+                # 3. Final fallback: use asset-class standard tickSize so trade never crashes or wastes calls
                 if not schedule:
                     fb_ts = _get_fallback_tick_size(mapped_symbol, env_name)
-                    print(f"[{env_name}] WARNING: Live tickSize schedule missing for {mapped_symbol} (ID {inst_id}); using fallback tickSize={fb_ts}")
                     schedule = [{"tickSize": fb_ts}]
                 meta = {"routeId": route_id, "tickSizeSchedule": schedule}
                 _ROUTE_CACHE[route_cache_key] = meta
@@ -855,6 +872,12 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     headers["Authorization"] = f"Bearer {token}"
                     headers["accNum"] = str(acc_num)
                     continue
+            if resp.status_code == 429:
+                _TL_RATE_LIMIT_UNTIL[env_name] = time.time() + 120
+                print(f"[{env_name}] Order POST hit {_summarize_http_error(resp)} (attempt {attempt + 1}/3) — backing off...", flush=True)
+                if attempt < 2:
+                    time.sleep(6 * (attempt + 1))
+                    continue
             break
         except Exception as e:
             last_err = e
@@ -869,9 +892,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
             registry_mark_failed(trade_id, env_name, err_msg)
         return None
 
-    print(f"[{env_name}] REST RESPONSE: Status={resp.status_code} Body={resp.text}", flush=True)
-
     if resp.ok:
+        print(f"[{env_name}] REST RESPONSE: Status={resp.status_code} Body={resp.text}", flush=True)
         resp_data = resp.json()
         print(f"[{env_name}] REST Order Success: {resp.text}")
 
@@ -888,10 +910,11 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
 
         return broker_order_id or "unknown"
     else:
-        print(f"[{env_name}] REST Order Failed: {resp.text}")
-        notify_telegram(f"❌ {env_name} order rejected: {mapped_symbol} {side} {qty}\n{resp.text[:200]}")
+        short_err = _summarize_http_error(resp)
+        print(f"[{env_name}] REST Order Failed: {short_err}", flush=True)
+        notify_telegram(f"❌ {env_name} order rejected: {mapped_symbol} {side} {qty}\n{short_err}")
         if trade_id:
-            registry_mark_failed(trade_id, env_name, f"Order rejected ({resp.status_code}): {resp.text[:200]}")
+            registry_mark_failed(trade_id, env_name, f"Order rejected: {short_err}")
         return None
 
 # ======================================================================
@@ -1741,10 +1764,10 @@ def webhook():
         # Kill Switch Fast-Fail Check
         now_ts = time.time()
         for env_name, state in kill_switch_state.items():
-            if (now_ts - state.get("last_updated", 0)) > 120:
-                print(f"[KillSwitch] CRITICAL: Cache for {env_name} is STALE. Failing closed.")
+            if (now_ts - state.get("last_updated", 0)) > 600:
+                print(f"[KillSwitch] CRITICAL: Cache for {env_name} is STALE (>600s). Failing closed.")
                 return jsonify({"error": f"Kill switch cache stale for {env_name}. Failsafe active."}), 503
-            if state.get("kill_switch_active"):
+            if state.get("kill_switch_active") and not state.get("fail_closed"):
                 print(f"[KillSwitch] BLOCKED webhook. Kill switch ACTIVE for {env_name}.")
                 return jsonify({"error": f"Kill switch active for {env_name}"}), 403
 
@@ -2209,17 +2232,26 @@ def equity_poller_daemon():
                         personal_pct = 0.01
                         firm_pct = 0.03
                     
-                    # Check Token age
+                    # Check if this account is currently in a Cloudflare 429 cooldown window
                     now_ts = time.time()
-                    if env_name not in tokens or (now_ts - last_refresh.get(env_name, 0)) > 3000: # Refresh every 50 mins
+                    cooldown_until = _TL_RATE_LIMIT_UNTIL.get(env_name, 0)
+                    if now_ts < cooldown_until:
+                        with _kill_switch_lock:
+                            if env_name in kill_switch_state:
+                                kill_switch_state[env_name]["last_updated"] = now_ts
+                        continue
+
+                    # Check Token age
+                    if env_name not in tokens or (now_ts - last_refresh.get(env_name, 0)) > 2400: # Refresh every 40 mins
                         try:
                             token, acc_id, acc_num = authenticate_tradelocker(config)
                             tokens[env_name] = (token, acc_id, acc_num, config["api_url"])
                             last_refresh[env_name] = now_ts
                         except Exception as e:
-                            print(f"[{env_name}] [KillSwitch] Auth failed: {e}")
+                            print(f"[{env_name}] [KillSwitch] Auth warning: {e}")
                             with _kill_switch_lock:
-                                kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                                if env_name in kill_switch_state:
+                                    kill_switch_state[env_name]["last_updated"] = now_ts
                             continue
                     
                     token, acc_id, acc_num, api_url = tokens[env_name]
@@ -2227,20 +2259,32 @@ def equity_poller_daemon():
                     headers = {"Authorization": f"Bearer {token}", "accNum": str(acc_num)}
                     state_url = f"{api_url}/trade/accounts/{acc_id}/state"
                     try:
-                        resp = requests.get(state_url, headers=headers, timeout=5)
+                        resp = requests.get(state_url, headers=headers, timeout=10)
                         
                         if resp.status_code == 401:
                             # Token expired, force refresh next loop
                             invalidate_tradelocker_auth_cache(env_name)
                             last_refresh[env_name] = 0
                             continue
-                        elif not resp.ok:
-                            print(f"[{env_name}] [KillSwitch] API Error {resp.status_code}: {resp.text}")
+                        elif resp.status_code == 429:
+                            # Cloudflare Error 1015 rate-limit: back off for 120s and preserve last known state
+                            _TL_RATE_LIMIT_UNTIL[env_name] = now_ts + 120
+                            print(f"[{env_name}] [KillSwitch] {_summarize_http_error(resp)} — pausing state polls for 120s.", flush=True)
                             with _kill_switch_lock:
-                                kill_switch_state[env_name] = {"kill_switch_active": True, "last_updated": now_ts, "fail_closed": True}
+                                if env_name in kill_switch_state:
+                                    kill_switch_state[env_name]["last_updated"] = now_ts
+                            continue
+                        elif not resp.ok:
+                            print(f"[{env_name}] [KillSwitch] {_summarize_http_error(resp)}", flush=True)
+                            with _kill_switch_lock:
+                                if env_name in kill_switch_state:
+                                    kill_switch_state[env_name]["last_updated"] = now_ts
                             continue
                     except Exception as e:
                         print(f"[{env_name}] [KillSwitch] Network Error during state fetch: {e}")
+                        with _kill_switch_lock:
+                            if env_name in kill_switch_state:
+                                kill_switch_state[env_name]["last_updated"] = now_ts
                         continue
                     
                     try:
@@ -2351,7 +2395,7 @@ def equity_poller_daemon():
             import traceback
             traceback.print_exc()
             
-        time.sleep(5)
+        time.sleep(float(os.environ.get("KILL_SWITCH_POLL_SECONDS", 45)))
 
 _daemon_started = False
 _daemon_lock = threading.Lock()
