@@ -467,6 +467,7 @@ def authenticate_tradelocker(config, force_refresh=False):
 
         last_err = None
         resp = None
+        token = None
         for attempt in range(3):
             try:
                 resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
@@ -476,19 +477,24 @@ def authenticate_tradelocker(config, force_refresh=False):
                     if attempt < 2:
                         time.sleep(5 * (attempt + 1))
                         continue
-                break
+                if resp.ok:
+                    token = resp.json().get("accessToken")
+                    if token:
+                        break
+                    last_err = "Empty accessToken in auth response"
+                else:
+                    break
             except Exception as e:
                 last_err = e
                 print(f"[{env_name}] Auth token request retry {attempt + 1}/3 after error: {e}", flush=True)
                 time.sleep(1.5 * (attempt + 1))
-        if resp is None:
-            raise Exception(f"TradeLocker Auth network timeout after 3 attempts: {last_err}")
+        if resp is None or (resp.ok and not token):
+            raise Exception(f"TradeLocker Auth network/JSON error after 3 attempts: {last_err}")
 
         if not resp.ok:
             short_err = _summarize_http_error(resp)
             notify_telegram(f"❌ {env_name} auth failed: {short_err}")
             raise Exception(f"TradeLocker Auth failed: {short_err}")
-        token = resp.json().get("accessToken")
 
         # Keep cached acc_id / acc_num if already discovered in this process
         prev_cached = _TL_AUTH_CACHE.get(env_name)
@@ -860,7 +866,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
 
     resp = None
     last_err = None
-    for attempt in range(3):
+    route_refreshed = False
+    for attempt in range(4):
         try:
             resp = requests.post(order_url, json=payload, headers=headers, timeout=15)
             if resp.status_code == 401 and attempt == 0:
@@ -874,18 +881,53 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     continue
             if resp.status_code == 429:
                 _TL_RATE_LIMIT_UNTIL[env_name] = time.time() + 120
-                print(f"[{env_name}] Order POST hit {_summarize_http_error(resp)} (attempt {attempt + 1}/3) — backing off...", flush=True)
-                if attempt < 2:
+                print(f"[{env_name}] Order POST hit {_summarize_http_error(resp)} (attempt {attempt + 1}/4) — backing off...", flush=True)
+                if attempt < 3:
                     time.sleep(6 * (attempt + 1))
                     continue
+
+            # Check if TradeLocker returned HTTP 200 with {"s":"error","errmsg":"...route is forbidden..."}
+            if resp.ok:
+                try:
+                    check_json = resp.json()
+                except Exception:
+                    check_json = {}
+                if isinstance(check_json, dict) and check_json.get("s") == "error":
+                    errmsg = str(check_json.get("errmsg", ""))
+                    if "route" in errmsg.lower() and not route_refreshed:
+                        route_refreshed = True
+                        print(f"[{env_name}] Stale/forbidden routeId={payload.get('routeId')} detected ('{errmsg}') — refreshing instrument registry and retrying...", flush=True)
+                        _ROUTE_CACHE.pop(route_cache_key, None)
+                        cfg = next((c for c in get_active_configs(verbose=False) if c["name"] == env_name), None)
+                        if cfg:
+                            try:
+                                fetch_instrument_registry(cfg)
+                                fresh_inst = _INSTRUMENT_REGISTRY.get(env_name, {}).get(mapped_symbol) or _INSTRUMENT_REGISTRY.get(env_name, {}).get(mapped_symbol.replace("+", ""))
+                                if fresh_inst:
+                                    fresh_trade_routes = [r.get("id") for r in fresh_inst.get("routes", []) if r.get("type") == "TRADE" and r.get("id")]
+                                    alt_routes = [rid for rid in fresh_trade_routes if rid != payload.get("routeId")]
+                                    if alt_routes:
+                                        payload["routeId"] = alt_routes[0]
+                                        print(f"[{env_name}] Switched to fresh TRADE routeId={payload['routeId']}", flush=True)
+                                        continue
+                                    elif fresh_trade_routes:
+                                        payload["routeId"] = fresh_trade_routes[0]
+                                        continue
+                            except Exception as re_err:
+                                print(f"[{env_name}] Route refresh error: {re_err}", flush=True)
+                        # Also try without explicit routeId if the cached routeId was rejected
+                        if "routeId" in payload:
+                            print(f"[{env_name}] Retrying order without explicit routeId...", flush=True)
+                            payload.pop("routeId", None)
+                            continue
             break
         except Exception as e:
             last_err = e
-            print(f"[{env_name}] Order POST retry {attempt + 1}/3 after network error: {e}", flush=True)
+            print(f"[{env_name}] Order POST retry {attempt + 1}/4 after network error: {e}", flush=True)
             time.sleep(1.5 * (attempt + 1))
 
     if resp is None:
-        err_msg = f"Order POST timed out after 3 attempts: {last_err}"
+        err_msg = f"Order POST timed out after retries: {last_err}"
         print(f"[{env_name}] {err_msg}", flush=True)
         notify_telegram(f"❌ {env_name} order network timeout: {mapped_symbol} {side} {qty}\n{last_err}")
         if trade_id:
@@ -894,7 +936,19 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
 
     if resp.ok:
         print(f"[{env_name}] REST RESPONSE: Status={resp.status_code} Body={resp.text}", flush=True)
-        resp_data = resp.json()
+        try:
+            resp_data = resp.json()
+        except Exception:
+            resp_data = {}
+
+        if isinstance(resp_data, dict) and resp_data.get("s") == "error":
+            errmsg = resp_data.get("errmsg") or resp.text[:200]
+            print(f"[{env_name}] REST Order Rejected by Broker: {errmsg}", flush=True)
+            notify_telegram(f"❌ {env_name} order rejected: {mapped_symbol} {side} {qty}\n{errmsg}")
+            if trade_id:
+                registry_mark_failed(trade_id, env_name, f"Broker error: {errmsg}")
+            return None
+
         print(f"[{env_name}] REST Order Success: {resp.text}")
 
         # TradeLocker returns orderId inside {"s":"ok","d":{"orderId":"..."}}
