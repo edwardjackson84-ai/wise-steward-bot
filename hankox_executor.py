@@ -300,6 +300,22 @@ def registry_mark_closed(trade_id, env_name=None):
         _save_registry(reg)
         print(f"[Registry] CLOSED {trade_id} on {env_name or 'all envs'}")
 
+def registry_mark_closed_for_env(env_name):
+    """Mark all open dispatches for a specific env_name as closed."""
+    with _registry_lock:
+        reg = _load_registry()
+        now = datetime.utcnow().isoformat()
+        changed = False
+        for tid, entry in reg.items():
+            d = entry.get("dispatches", {}).get(env_name)
+            if d and d.get("status") == "open":
+                d["status"] = "closed"
+                d["closed_at"] = now
+                changed = True
+        if changed:
+            _save_registry(reg)
+            print(f"[Registry] CLOSED all open dispatches on {env_name}")
+
 def registry_get_open(symbol, side, env_name=None):
     """Return [(trade_id, env, dispatch), ...] for open dispatches matching filters, FIFO."""
     with _registry_lock:
@@ -1687,7 +1703,9 @@ def reset_kill_switch():
             if cur_equity:
                 set_start_of_day_baseline(env_name, cur_equity, now_ts)
             set_kill_switch_flag(env_name, False)
+            set_profit_alert_flag(env_name, False)
             state["kill_switch_active"] = False
+            state["profit_alert_sent"] = False
             state["baseline"] = cur_equity
             state["last_updated"] = now_ts
             reset_envs.append(env_name)
@@ -1697,6 +1715,47 @@ def reset_kill_switch():
         "status": "success",
         "reset_accounts": reset_envs,
         "daily_loss_kill_switch": kill_switch_state,
+    }), 200
+
+@app.route("/close-all", methods=["GET", "POST"])
+def manual_close_all():
+    """Manually flattens all open positions on a specific account (or all active TradeLocker accounts)."""
+    import hmac
+    expected_token = os.environ.get("WEBHOOK_SECRET")
+    if not expected_token:
+        return jsonify({"error": "Service misconfigured"}), 503
+    if not hmac.compare_digest(expected_token, request.args.get("token", "")):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    target_env = request.args.get("account") or request.args.get("env")
+    configs = get_tradelocker_configs_only(get_active_configs(verbose=False))
+    if target_env:
+        configs = [c for c in configs if c["name"] == target_env or c["name"].lstrip(".") == target_env.lstrip(".")]
+
+    flattened = []
+    failed = []
+    for cfg in configs:
+        env_name = cfg["name"]
+        try:
+            token, acc_id, acc_num = authenticate_tradelocker(cfg)
+            if flatten_account(cfg, token, acc_id, acc_num, cfg["api_url"], env_name):
+                flattened.append(env_name)
+                set_profit_alert_flag(env_name, False)
+            else:
+                failed.append(env_name)
+        except Exception as e:
+            print(f"[{env_name}] Manual close-all error: {e}")
+            failed.append(env_name)
+
+    # Also mark registry entries closed for flattened accounts
+    for env_name in flattened:
+        registry_mark_closed_for_env(env_name)
+
+    notify_telegram(f"💰 Manual Close-All executed for: {', '.join(flattened) or 'none'}. Failed: {', '.join(failed) or 'none'}.")
+    return jsonify({
+        "status": "success" if not failed else "partial_error",
+        "flattened_accounts": flattened,
+        "failed_accounts": failed,
     }), 200
 
 def _validate_absolute_direction(symbol, side, target_type, abs_price, price, source):
@@ -2170,6 +2229,19 @@ def set_kill_switch_flag(env_name, state: bool):
     except Exception as e:
         print(f"[KillSwitch] Redis error setting flag: {e}")
 
+def get_profit_alert_flag(env_name):
+    try:
+        return redis_client.get(f"profit_alert_{env_name}") == "true"
+    except Exception as e:
+        print(f"[KillSwitch] Redis error reading profit alert flag: {e}")
+        return False
+
+def set_profit_alert_flag(env_name, state: bool):
+    try:
+        redis_client.set(f"profit_alert_{env_name}", "true" if state else "false")
+    except Exception as e:
+        print(f"[KillSwitch] Redis error setting profit alert flag: {e}")
+
 def get_start_of_day_baseline(env_name):
     try:
         v = redis_client.get(f"start_of_day_baseline_{env_name}")
@@ -2243,7 +2315,7 @@ def flatten_account(config, token, acc_id, acc_num, api_url, env_name):
     return True
 
 def equity_poller_daemon():
-    print("[KillSwitch] Daemon thread started (1% Daily Equity Loss Stop-Trading + News Calendar Sync).")
+    print("[KillSwitch] Daemon thread started (1% Daily Equity Loss Stop-Trading + +4% Floating Profit Alert + News Calendar Sync).")
     # Keep track of tokens per env
     tokens = {}
     last_refresh = {}
@@ -2265,7 +2337,14 @@ def equity_poller_daemon():
                     env_name = config["name"]
                     env_vars = config.get("env_vars", {})
 
-                    if "atlas" not in env_name.lower() and str(env_vars.get("ENABLE_KILL_SWITCH", "false")).lower() != "true":
+                    kill_switch_enabled = (
+                        "atlas" in env_name.lower()
+                        or str(env_vars.get("ENABLE_KILL_SWITCH", os.environ.get("ENABLE_KILL_SWITCH", "true"))).lower() == "true"
+                    )
+                    profit_alert_enabled = (
+                        str(env_vars.get("ENABLE_PROFIT_ALERT", os.environ.get("ENABLE_PROFIT_ALERT", "true"))).lower() == "true"
+                    )
+                    if not kill_switch_enabled and not profit_alert_enabled:
                         continue
 
                     # Default to 1% (0.01) daily losing equity stop-trading threshold
@@ -2279,12 +2358,21 @@ def equity_poller_daemon():
                         or env_vars.get("FIRM_LOSS_PCT")
                         or os.environ.get("ATLAS_FIRM_LOSS_PCT", "0.03")
                     )
+                    profit_alert_pct_str = (
+                        env_vars.get("FLOATING_PROFIT_ALERT_PCT")
+                        or env_vars.get("PROFIT_ALERT_PCT")
+                        or os.environ.get("FLOATING_PROFIT_ALERT_PCT", "0.04")
+                    )
                     try:
                         personal_pct = float(personal_pct_str)
                         firm_pct = float(firm_pct_str)
                     except Exception:
                         personal_pct = 0.01
                         firm_pct = 0.03
+                    try:
+                        profit_alert_pct = float(profit_alert_pct_str)
+                    except Exception:
+                        profit_alert_pct = 0.04
                     
                     # Check if this account is currently in a Cloudflare 429 cooldown window
                     now_ts = time.time()
@@ -2376,6 +2464,7 @@ def equity_poller_daemon():
                         baseline = max(balance, projectedBalance)
                         set_start_of_day_baseline(env_name, baseline, now_ts)
                         set_kill_switch_flag(env_name, False)
+                        set_profit_alert_flag(env_name, False)
                         print(f"[{env_name}] [KillSwitch] NEW DAY BASELINE CAPTURED: {baseline}")
                         if was_locked:
                             notify_telegram(
@@ -2389,6 +2478,7 @@ def equity_poller_daemon():
                             baseline = max(balance, projectedBalance)
                             set_start_of_day_baseline(env_name, baseline, now_ts)
                             set_kill_switch_flag(env_name, False)
+                            set_profit_alert_flag(env_name, False)
                             print(f"[{env_name}] [KillSwitch] COLD START BASELINE CAPTURED: {baseline}")
                     
                     # Breach calculation (strictly measured against our captured daily baseline
@@ -2397,10 +2487,35 @@ def equity_poller_daemon():
                     firm_floor = baseline * (1 - firm_pct)
                     daily_pnl = projectedBalance - baseline
                     
+                    # +4% Floating Equity Alert calculation (measured against current realized account balance)
+                    profit_target_equity = balance * (1 + profit_alert_pct)
+                    floating_pnl = projectedBalance - balance
+                    floating_pct = (floating_pnl / balance) if balance > 0 else 0.0
+                    profit_hit = profit_alert_enabled and balance > 0 and projectedBalance >= profit_target_equity
+                    profit_already_sent = get_profit_alert_flag(env_name)
+
+                    if profit_hit and not profit_already_sent:
+                        set_profit_alert_flag(env_name, True)
+                        profit_already_sent = True
+                        base_url = os.environ.get("EXECUTOR_BASE_URL", "https://wise-steward.onrender.com").rstrip("/")
+                        secret = os.environ.get("WEBHOOK_SECRET", "")
+                        close_link = f"\n👉 Tap to Close All on {env_name}: {base_url}/close-all?token={secret}&account={env_name}" if secret else ""
+                        print(f"[{env_name}] [ProfitAlert] +{profit_alert_pct*100:.1f}% Floating Equity Target Hit! Equity=${projectedBalance:,.2f}, Balance=${balance:,.2f}")
+                        notify_telegram(
+                            f"💰 +{profit_alert_pct*100:.1f}% Floating Equity Alert for {env_name}!\n"
+                            f"Floating Equity: ${projectedBalance:,.2f} (+{floating_pct*100:.2f}% / +${floating_pnl:,.2f} open profit)\n"
+                            f"Account Balance: ${balance:,.2f} (+{profit_alert_pct*100:.1f}% Target: ${profit_target_equity:,.2f})\n"
+                            f"Positions remain OPEN so you can decide whether to close out or let winners run.{close_link}"
+                        )
+                    elif not profit_hit and profit_already_sent and projectedBalance < balance * (1 + profit_alert_pct * 0.5):
+                        # Reset alert flag once floating profit drops below half the threshold (e.g. < +2% or after positions are closed)
+                        set_profit_alert_flag(env_name, False)
+                        profit_already_sent = False
+
                     breached = False
                     reason = ""
                     
-                    if projectedBalance <= personal_floor:
+                    if kill_switch_enabled and projectedBalance <= personal_floor:
                         breached = True
                         reason = (
                             f"Equity (${projectedBalance:,.2f}) hit -{personal_pct*100:.1f}% Daily Stop Floor "
@@ -2408,7 +2523,7 @@ def equity_poller_daemon():
                         )
                     
                     # Update memory cache
-                    is_active = get_kill_switch_flag(env_name)
+                    is_active = get_kill_switch_flag(env_name) if kill_switch_enabled else False
                     
                     with _kill_switch_lock:
                         kill_switch_state[env_name] = {
@@ -2416,7 +2531,13 @@ def equity_poller_daemon():
                             "last_updated": now_ts,
                             "fail_closed": False,
                             "baseline": baseline,
+                            "balance": balance,
                             "equity": projectedBalance,
+                            "floating_pnl": round(floating_pnl, 2),
+                            "floating_pct": round(floating_pct * 100, 2),
+                            "profit_target_equity": round(profit_target_equity, 2),
+                            "profit_alert_pct": profit_alert_pct,
+                            "profit_alert_sent": profit_already_sent,
                             "daily_pnl": round(daily_pnl, 2),
                             "personal_floor": personal_floor,
                             "personal_loss_pct": personal_pct,
@@ -2500,12 +2621,13 @@ def check_startup_health():
 
     # Send heartbeat alert on successful boot to verify master process context
     active_names = ", ".join([c.get("name", "Unknown") for c in configs])
-    msg = f"✅ Wise Steward booted successfully with {len(configs)} active account(s): {active_names} (1% Daily Stop + ±5m Red Folder News Lockout ACTIVE)"
+    msg = f"✅ Wise Steward booted successfully with {len(configs)} active account(s): {active_names} (1% Daily Stop + +4% Floating Profit Alert + ±5m Red Folder News Lockout ACTIVE)"
     print(msg)
     from notifications import notify_telegram
     notify_telegram(msg)
 
 if __name__ == "__main__":
     check_startup_health()
+    start_daemon()
     print("Starting Wise Steward Webhook Executor (TradeLocker + Hanko)...")
     app.run(host="0.0.0.0", port=5001)
