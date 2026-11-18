@@ -440,6 +440,25 @@ _TL_AUTH_CACHE = {}
 _TL_AUTH_LOCK = threading.Lock()
 _TL_TOKEN_TTL_SECONDS = 2400  # Reuse token + account index for 40 minutes
 _TL_RATE_LIMIT_UNTIL = {}     # env_name -> unix timestamp when 429 cooldown expires
+_TL_ORDER_PACE_LOCK = threading.Lock()
+_TL_LAST_ORDER_TS = {}        # env_name -> unix timestamp of last scheduled order POST
+
+def _wait_for_order_slot(env_name):
+    """Paces outbound TradeLocker order POSTs per account (default 250ms apart) to prevent HTTP 429 Error 1015 bursts."""
+    try:
+        gap = float(os.environ.get("TRADELOCKER_ORDER_PACE_SECONDS", "0.25"))
+    except Exception:
+        gap = 0.25
+    if gap <= 0:
+        return
+    with _TL_ORDER_PACE_LOCK:
+        now = time.time()
+        last_ts = _TL_LAST_ORDER_TS.get(env_name, 0.0)
+        target_ts = max(now, last_ts + gap)
+        _TL_LAST_ORDER_TS[env_name] = target_ts
+        wait_sec = target_ts - now
+    if wait_sec > 0:
+        time.sleep(wait_sec)
 
 def _summarize_http_error(resp):
     """Returns a concise, single-line summary of an HTTP error (stripping Cloudflare HTML pages)."""
@@ -885,6 +904,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     route_refreshed = False
     for attempt in range(4):
         try:
+            _wait_for_order_slot(env_name)
             resp = requests.post(order_url, json=payload, headers=headers, timeout=15)
             if resp.status_code == 401 and attempt == 0:
                 print(f"[{env_name}] Order got 401 Unauthorized — refreshing cached token and retrying...", flush=True)
