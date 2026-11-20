@@ -1455,9 +1455,16 @@ def refresh_news_calendar(force: bool = False):
             print(f"[NewsLockout] Cached {len(high_events)} Red Folder (High-Impact) events for this week.")
             return high_events
         else:
-            print(f"[NewsLockout] Calendar fetch returned status {resp.status_code}")
+            # On 429 or upstream error, back off for 15 minutes while preserving cached events
+            with _news_cache_lock:
+                if _news_cache["events"]:
+                    _news_cache["last_fetched"] = now_ts - 14400 + 900
+            print(f"[NewsLockout] Calendar fetch returned status {resp.status_code} (backing off 15m, using cached events)")
     except Exception as e:
-        print(f"[NewsLockout] Calendar fetch error (using cached events): {e}")
+        with _news_cache_lock:
+            if _news_cache["events"]:
+                _news_cache["last_fetched"] = now_ts - 14400 + 900
+        print(f"[NewsLockout] Calendar fetch error (backing off 15m, using cached events): {e}")
 
     with _news_cache_lock:
         return list(_news_cache["events"])
@@ -1575,7 +1582,18 @@ def is_news_lockout_active(symbol: str = "US30", now_ts: float = None):
 
 
 def is_sabbath_mode_active():
-    now = datetime.now()
+    """
+    Sabbath Mode blocks new entries from Friday 4:00 PM ET (16:00 America/New_York)
+    through Sunday 5:00 PM ET (17:00 America/New_York).
+    Always evaluated in America/New_York time regardless of server (Render UTC) clock.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timezone, timedelta
+        ny_tz = timezone(timedelta(hours=-5))
+    now = datetime.now(tz=ny_tz)
     if now.weekday() == 4 and now.hour >= 16: return True
     if now.weekday() == 5: return True
     if now.weekday() == 6 and now.hour < 17: return True
