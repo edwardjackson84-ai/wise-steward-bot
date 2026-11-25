@@ -444,11 +444,11 @@ _TL_ORDER_PACE_LOCK = threading.Lock()
 _TL_LAST_ORDER_TS = {}        # env_name -> unix timestamp of last scheduled order POST
 
 def _wait_for_order_slot(env_name):
-    """Paces outbound TradeLocker order POSTs per account (default 250ms apart) to prevent HTTP 429 Error 1015 bursts."""
+    """Paces outbound TradeLocker order POSTs per account (default 600ms apart) to prevent HTTP 429/502 bursts."""
     try:
-        gap = float(os.environ.get("TRADELOCKER_ORDER_PACE_SECONDS", "0.25"))
+        gap = float(os.environ.get("TRADELOCKER_ORDER_PACE_SECONDS", "0.60"))
     except Exception:
-        gap = 0.25
+        gap = 0.60
     if gap <= 0:
         return
     with _TL_ORDER_PACE_LOCK:
@@ -503,14 +503,19 @@ def authenticate_tradelocker(config, force_refresh=False):
         last_err = None
         resp = None
         token = None
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 resp = requests.post(auth_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
                 if resp.status_code == 429:
                     _TL_RATE_LIMIT_UNTIL[env_name] = time.time() + 120
                     print(f"[{env_name}] Auth hit {_summarize_http_error(resp)} — backing off...", flush=True)
-                    if attempt < 2:
+                    if attempt < 3:
                         time.sleep(5 * (attempt + 1))
+                        continue
+                if resp.status_code >= 500:
+                    print(f"[{env_name}] Auth hit transient server error {_summarize_http_error(resp)} (attempt {attempt + 1}/4) — retrying...", flush=True)
+                    if attempt < 3:
+                        time.sleep(2 * (attempt + 1))
                         continue
                 if resp.ok:
                     token = resp.json().get("accessToken")
@@ -521,10 +526,10 @@ def authenticate_tradelocker(config, force_refresh=False):
                     break
             except Exception as e:
                 last_err = e
-                print(f"[{env_name}] Auth token request retry {attempt + 1}/3 after error: {e}", flush=True)
+                print(f"[{env_name}] Auth token request retry {attempt + 1}/4 after error: {e}", flush=True)
                 time.sleep(1.5 * (attempt + 1))
         if resp is None or (resp.ok and not token):
-            raise Exception(f"TradeLocker Auth network/JSON error after 3 attempts: {last_err}")
+            raise Exception(f"TradeLocker Auth network/JSON error after retries: {last_err}")
 
         if not resp.ok:
             short_err = _summarize_http_error(resp)
@@ -548,21 +553,26 @@ def authenticate_tradelocker(config, force_refresh=False):
         print(f"[{env_name}] FETCHING ALL ACCOUNTS TO DISCOVER INDEX...", flush=True)
         r2 = None
         last_err = None
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 r2 = requests.get(f"{config['api_url']}/auth/jwt/all-accounts", headers={"Authorization": f"Bearer {token}"}, timeout=15)
                 if r2.status_code == 429:
                     _TL_RATE_LIMIT_UNTIL[env_name] = time.time() + 120
-                    if attempt < 2:
+                    if attempt < 3:
                         time.sleep(5 * (attempt + 1))
+                        continue
+                if r2.status_code >= 500:
+                    print(f"[{env_name}] all-accounts hit transient server error {_summarize_http_error(r2)} (attempt {attempt + 1}/4) — retrying...", flush=True)
+                    if attempt < 3:
+                        time.sleep(2 * (attempt + 1))
                         continue
                 break
             except Exception as e:
                 last_err = e
-                print(f"[{env_name}] all-accounts request retry {attempt + 1}/3 after error: {e}", flush=True)
+                print(f"[{env_name}] all-accounts request retry {attempt + 1}/4 after error: {e}", flush=True)
                 time.sleep(1.5 * (attempt + 1))
         if r2 is None:
-            raise Exception(f"Failed to fetch all-accounts for {env_name} after 3 attempts: {last_err}")
+            raise Exception(f"Failed to fetch all-accounts for {env_name} after retries: {last_err}")
 
         if not r2.ok:
             raise Exception(f"Failed to fetch all-accounts for {env_name}: {_summarize_http_error(r2)}")
@@ -902,7 +912,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
     resp = None
     last_err = None
     route_refreshed = False
-    for attempt in range(4):
+    for attempt in range(5):
         try:
             _wait_for_order_slot(env_name)
             resp = requests.post(order_url, json=payload, headers=headers, timeout=15)
@@ -917,9 +927,14 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     continue
             if resp.status_code == 429:
                 _TL_RATE_LIMIT_UNTIL[env_name] = time.time() + 120
-                print(f"[{env_name}] Order POST hit {_summarize_http_error(resp)} (attempt {attempt + 1}/4) — backing off...", flush=True)
-                if attempt < 3:
+                print(f"[{env_name}] Order POST hit {_summarize_http_error(resp)} (attempt {attempt + 1}/5) — backing off...", flush=True)
+                if attempt < 4:
                     time.sleep(6 * (attempt + 1))
+                    continue
+            if resp.status_code >= 500:
+                print(f"[{env_name}] Order POST hit transient server error {_summarize_http_error(resp)} (attempt {attempt + 1}/5) — retrying...", flush=True)
+                if attempt < 4:
+                    time.sleep(2 * (attempt + 1))
                     continue
 
             # Check if TradeLocker returned HTTP 200 with {"s":"error","errmsg":"...route is forbidden..."}
