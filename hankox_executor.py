@@ -937,7 +937,7 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     time.sleep(2 * (attempt + 1))
                     continue
 
-            # Check if TradeLocker returned HTTP 200 with {"s":"error","errmsg":"...route is forbidden..."}
+            # Check if TradeLocker returned HTTP 200 with {"s":"error","errmsg":"..."}
             if resp.ok:
                 try:
                     check_json = resp.json()
@@ -945,7 +945,8 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                     check_json = {}
                 if isinstance(check_json, dict) and check_json.get("s") == "error":
                     errmsg = str(check_json.get("errmsg", ""))
-                    if "route" in errmsg.lower() and not route_refreshed:
+                    err_lower = errmsg.lower()
+                    if "route" in err_lower and not route_refreshed:
                         route_refreshed = True
                         print(f"[{env_name}] Stale/forbidden routeId={payload.get('routeId')} detected ('{errmsg}') — refreshing instrument registry and retrying...", flush=True)
                         _ROUTE_CACHE.pop(route_cache_key, None)
@@ -971,6 +972,12 @@ async def execute_trade_rest(token, acc_id, acc_num, symbol, side, qty, api_url,
                             print(f"[{env_name}] Retrying order without explicit routeId...", flush=True)
                             payload.pop("routeId", None)
                             continue
+                    # Daily rollover / session reopen transition ("SL orders are forbidden by trade session status")
+                    if ("trade session status" in err_lower or "session" in err_lower) and attempt < 4:
+                        wait_s = 15 * (attempt + 1)
+                        print(f"[{env_name}] Broker session reopen transition ('{errmsg}') on {mapped_symbol} (attempt {attempt + 1}/5) — waiting {wait_s}s for session to open...", flush=True)
+                        time.sleep(wait_s)
+                        continue
             break
         except Exception as e:
             last_err = e
@@ -1614,7 +1621,30 @@ def is_sabbath_mode_active():
     if now.weekday() == 6 and now.hour < 17: return True
     return False
 
+def is_daily_rollover_break(symbol):
+    """
+    Returns True if the instrument is currently inside the daily CME / broker
+    settlement break (16:59 to 18:00 America/New_York, Mon-Thu).
+    """
+    if _get_asset_class(symbol) not in ("index", "gold"):
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timezone, timedelta
+        ny_tz = timezone(timedelta(hours=-5))
+    now_ny = datetime.now(tz=ny_tz)
+    # Daily settlement break occurs Mon-Thu from 4:59 PM ET to 6:00 PM ET
+    if now_ny.weekday() in (0, 1, 2, 3):
+        if (now_ny.hour == 16 and now_ny.minute == 59) or now_ny.hour == 17:
+            return True
+    return False
+
 def is_session_active(symbol):
+    if is_daily_rollover_break(symbol):
+        print(f"[Session] {symbol} is in daily CME rollover break (5:00 PM - 6:00 PM ET) — skipping entry.")
+        return False
     allowed_sessions_str = os.environ.get(f"SESSIONS_{symbol}", "Asian,London,New York")
     if not allowed_sessions_str.strip(): return True
     allowed_sessions = [s.strip() for s in allowed_sessions_str.split(",")]
